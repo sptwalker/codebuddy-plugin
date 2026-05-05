@@ -44,7 +44,7 @@ import {
   formatDuration, TimerState,
 } from './timeTracker';
 import { parseUsageFromAPI, estimateTokensLocally } from './tokenCounter';
-import { locateCurrentOutputLine, appendDynamicText, replaceLineTailText, appendMarkdownTable } from './chatInjector';
+import { locateCurrentOutputLine, appendDynamicText, replaceLineTailText, appendMarkdownTable, clearDisplay } from './chatInjector';
 import { generateTurnSummaryTable } from '../renderer/summaryTable';
 import { formatRealTimeDisplay } from '../renderer/realTimeDisplay';
 import { appendTurnStats } from '../storage/storageManager';
@@ -93,6 +93,11 @@ interface ActiveTurnContext {
   accumulatedResponseText: string;
   // ─── 结束状态 ───
   finishStatus: TurnFinishStatus;
+  // ─── chunk 超时自动结束检测 ───
+  /** 上次收到 chunk 的时间戳（用于超时判断） */
+  lastChunkTimeMs: number;
+  /** chunk 超时检测定时器 ID */
+  chunkTimeoutId: ReturnType<typeof setTimeout> | null;
 }
 
 // ─── 全局引擎实例状态 ───────────────────────────────
@@ -235,6 +240,11 @@ function unbindEventListeners(): void {
  *   5. 启动 setInterval 定时刷新（带 ENGINE_REFRESH 标签）
  */
 function handleRequestStart(payload: RequestStartPayload): void {
+  // ★ 清理上一轮残留的状态栏状态
+  clearDisplay();
+
+  logInfo(`[Engine] ★★★ E1 REQUEST_START RECEIVED | requestId=${payload.requestId} | msg="${(payload.userMessage ?? '').slice(0, 50)}"`);
+
   // 容错：如果上一轮还在计时中，强制停止
   if (_state === EngineState.TIMING || _state === EngineState.FINALIZING) {
     logWarn(`[Engine] E1 Previous turn still active (state=${_state}), forcing stop`);
@@ -261,6 +271,8 @@ function handleRequestStart(payload: RequestStartPayload): void {
     ttftMs: 0,
     accumulatedResponseText: '',
     finishStatus: TurnFinishStatus.NORMAL,
+    lastChunkTimeMs: performance.now(),
+    chunkTimeoutId: null,
   };
 
   // 启动高精度计时器
@@ -284,6 +296,9 @@ function handleRequestStart(payload: RequestStartPayload): void {
   }, _ctx.config.timerRefreshInterval, turnId);
 
   _state = EngineState.TIMING;
+
+  // ★ 启动 chunk 超时检测（E1 时就开始计时）
+  resetChunkTimeout();
 
   logInfo(
     `[Engine] E1 ⏱ TIMER_START | turn=${turnId}` +
@@ -324,6 +339,75 @@ function refreshTimerDisplay(): void {
   logTimerDebug(_ctx.turnId, elapsedMs);
 }
 
+// ══════════════════════════════════════════════════════
+// Chunk 超时自动结束检测
+// ══════════════════════════════════════════════════════
+
+/** chunk 停止后多久自动判定为"对话结束"（毫秒） */
+const CHUNK_TIMEOUT_MS = 10000; // 10 秒无新 chunk → 触发 E3（原 3s 太短，AI 思考/排队常超 3s）
+
+/** 最小响应长度阈值：累计文本少于此值时不触发自动结束 */
+const MIN_AUTO_END_RESPONSE_LEN = 5; // 至少要有几个字符的响应才认为"真结束了"
+
+/**
+ * 重置 chunk 超时检测计时器
+ * 每次收到 stream chunk 时调用，刷新超时截止时间
+ */
+function resetChunkTimeout(): void {
+  if (!_ctx) return;
+
+  // 清除旧的超时定时器
+  if (_ctx.chunkTimeoutId != null) {
+    clearTimeout(_ctx.chunkTimeoutId);
+    _ctx.chunkTimeoutId = null;
+  }
+
+  _ctx.lastChunkTimeMs = performance.now();
+
+  // 启动新的超时检测：CHUNK_TIMEOUT_MS 后如果还在 TIMING 状态 → 自动触发 E3
+  _ctx.chunkTimeoutId = setTimeout(() => {
+    if (!_ctx || _state !== EngineState.TIMING) return;
+
+    // ★ 安全守卫：累计响应文本太短 → 不触发自动结束（可能是 AI 还在思考/排队）
+    if (_ctx.accumulatedResponseText.length < MIN_AUTO_END_RESPONSE_LEN) {
+      logInfo(
+        `[Engine] ⏱ CHUNK_TIMEOUT_SKIPPED | turn=${_ctx.turnId}` +
+        ` | responseLen=${_ctx.accumulatedResponseText.length} chars (threshold=${MIN_AUTO_END_RESPONSE_LEN})` +
+        ` | 重置超时等待更多 chunk...`
+      );
+      // 不重置为 IDLE，而是重新启动超时检测
+      resetChunkTimeout();
+      return;
+    }
+
+    const gapMs = performance.now() - _ctx.lastChunkTimeMs;
+    logInfo(
+      `[Engine] ⏱ CHUNK_TIMEOUT | turn=${_ctx.turnId}` +
+      ` | gap=${gapMs.toFixed(0)}ms` +
+      ` | responseLen=${_ctx.accumulatedResponseText.length} chars`
+    );
+
+    // 自动构造 ResponseEnd payload 并触发完成流程
+    const autoEndPayload: ResponseEndPayload = {
+      finalUsage: undefined, // 超时场景无 API usage
+      fullResponseText: _ctx.accumulatedResponseText || undefined,
+      userMessage: _ctx.userMessage || undefined,
+    };
+
+    handleResponseEnd(autoEndPayload).catch((e) => {
+      logError('[Engine] Auto-end via timeout failed', e);
+    });
+  }, CHUNK_TIMEOUT_MS);
+}
+
+/** 清除 chunk 超时定时器 */
+function clearChunkTimeout(): void {
+  if (_ctx?.chunkTimeoutId != null) {
+    clearTimeout(_ctx.chunkTimeoutId);
+    _ctx.chunkTimeoutId = null;
+  }
+}
+
 /**
  * [E2] 处理「流式输出 chunk」事件
  *
@@ -340,6 +424,9 @@ function handleStreamChunk(payload: StreamChunkPayload): void {
   if (payload.chunk) {
     _ctx.accumulatedResponseText += payload.chunk;
   }
+
+  // ★ 重置 chunk 超时检测（每次收到 chunk 都刷新）
+  resetChunkTimeout();
 
   // TTFT 仅在首个 chunk 时记录一次
   if (_ctx.ttftRecorded) return;
@@ -376,8 +463,9 @@ async function handleResponseEnd(payload: ResponseEndPayload): Promise<void> {
   _state = EngineState.FINALIZING;
   _ctx.finishStatus = TurnFinishStatus.NORMAL;
 
-  // ── Step 1: 销毁刷新定时器 ──
+  // ── Step 1: 销毁刷新定时器 + chunk 超时检测 ──
   destroyRefreshTimer();
+  clearChunkTimeout();
 
   // ── Step 2: 停止计时器，获取最终耗时 ──
   const finalDurationMs = stopTimer(_ctx.timer);
@@ -807,6 +895,7 @@ function forceStopCurrentTurn(): void {
     logDebug(`[Engine] Force stopping turn=${_ctx.turnId} | state=${_state}`);
   }
   destroyRefreshTimer();
+  clearChunkTimeout();
   if (_ctx?.timer) {
     try { stopTimer(_ctx.timer); } catch { /* ignore */ }
   }

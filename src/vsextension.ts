@@ -68,6 +68,40 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
     cmdDisposables.push(showOutputCmd);
 
+    // 注册 showStatsPanel 命令（打开/聚焦统计文档）
+    const showStatsCmd = vscode.commands.registerCommand(
+      'codebuddy.enhance.showStatsPanel',
+      () => {
+        try {
+          // 尝试导入并显示统计文档
+          import('./core/chatInjector').then(({ getStatsDocument }) => {
+            const doc = getStatsDocument();
+            if (doc) {
+              vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside);
+            } else {
+              vscode.window.showInformationMessage('💡 还没有统计数据，请先进行一次 AI 对话');
+            }
+          }).catch(() => {
+            vscode.window.showInformationMessage('⚠ 统计文档功能暂时不可用');
+          });
+        } catch (e) { logError('[Entry] showStatsPanel failed', e); }
+      }
+    );
+    cmdDisposables.push(showStatsCmd);
+
+    // 注册 closeStatsPanel 命令（关闭统计文档）
+    const closeStatsCmd = vscode.commands.registerCommand(
+      'codebuddy.enhance.closeStatsPanel',
+      () => {
+        try {
+          import('./core/chatInjector').then(({ closeStatsDocument }) => {
+            closeStatsDocument();
+          });
+        } catch { /* ignore */ }
+      }
+    );
+    cmdDisposables.push(closeStatsCmd);
+
     for (const d of cmdDisposables) {
       context.subscriptions.push(d);
     }

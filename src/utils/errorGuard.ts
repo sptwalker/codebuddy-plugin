@@ -60,6 +60,22 @@ export function initOutputChannel(): void {
 }
 
 /**
+ * 显示输出通道（供命令面板调用）
+ */
+export function showOutputChannel(): void {
+  try {
+    getOutputChannel().show(true);
+  } catch { /* ignore */ }
+}
+
+/**
+ * 获取输出通道实例（供注入器使用）
+ */
+export function getOutputChannelInstance(): vscode.OutputChannel {
+  return getOutputChannel();
+}
+
+/**
  * 销毁输出通道（在 deactivate 中调用）
  */
 export function disposeOutputChannel(): void {
@@ -104,8 +120,8 @@ function emitLog(level: LogLevel, message: string, data?: unknown): void {
       console.log(fullMsg, data ?? '');
   }
 
-  // VS Code 输出通道（仅 WARN 和以上写入通道，避免刷屏）
-  if (LEVEL_ORDER[level] >= LEVEL_ORDER[LogLevel.WARN]) {
+  // VS Code 输出通道（INFO 及以上都写入通道，方便调试）
+  if (LEVEL_ORDER[level] >= LEVEL_ORDER[LogLevel.INFO]) {
     try {
       getOutputChannel().appendLine(`${fullMsg}${dataStr}`);
     } catch { /* ignore */ }

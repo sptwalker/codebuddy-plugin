@@ -19,8 +19,9 @@ import * as vscode from 'vscode';
 import { initEngine, disposeEngine } from './core/engine';
 import { installHooks, uninstallHooks } from './hook/chatLifecycleHook';
 import { installCommandInterceptor, uninstallCommandInterceptor } from './hook/commandInterceptor';
+import { initInjector, disposeInjector } from './core/chatInjector';
 import {
-  logInfo, logError, logWarn, logDebug,
+  logInfo, logError, logWarn, logDebug, showOutputChannel,
 } from './utils/errorGuard';
 import { disposeAllTimers } from './utils/cleanup';
 import { cleanupOldBuckets } from './storage/storageManager';
@@ -42,6 +43,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     logInfo(' CodeBuddy Enhance v0.1.0 activating...');
     logInfo('═══════════════════════════════════════════');
 
+    // ── Step 0: 初始化 UI 注入通道（StatusBar） ────────
+    initInjector();
+
     // ── Step 1: 初始化主引擎 ─────────────────────
     // 绑定 E1-E5 事件处理器，注册 /sum 命令回调
     // 引擎内部会初始化 OutputChannel 和配置持久化
@@ -53,8 +57,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     // ── Step 3: 安装 /sum 命令拦截器 ──────────────
     //   - codebuddy.enhance.sum 命令注册到插件生命周期
+    //   - codebuddy.enhance.showOutput 命令打开日志面板
     //   - CompletionItemProvider 提供 "/" 自动补全
     const cmdDisposables = installCommandInterceptor();
+
+    // 注册 showOutput 命令（打开输出通道）
+    const showOutputCmd = vscode.commands.registerCommand(
+      'codebuddy.enhance.showOutput',
+      () => { showOutputChannel(); }
+    );
+    cmdDisposables.push(showOutputCmd);
+
     for (const d of cmdDisposables) {
       context.subscriptions.push(d);
     }
@@ -99,7 +112,10 @@ export function deactivate(): void {
     // 2. 卸载事件钩子
     uninstallHooks();
 
-    // 3. 销毁引擎（含：停止计时、清除 Engine 定时器、解绑事件、销毁输出通道）
+    // 3. 销毁 UI 注入通道（StatusBar）
+    disposeInjector();
+
+    // 4. 销毁引擎（含：停止计时、清除 Engine 定时器、解绑事件、销毁输出通道）
     disposeEngine();
 
     // 4. 全局定时器兜底清理（确保无遗漏）

@@ -1,25 +1,23 @@
 /**
- * 聊天面板内容注入器
- * 封装定位对话行、行尾文案追加/替换、追加 Markdown 表格等通用方法
+ * 聊天面板内容注入器（VS Code 原生 UI 通道实现）
  *
- * 核心策略：
- *   - 通过 VS Code Webview API 向聊天面板注入内容
- *   - 使用 postMessage / 修改 DOM 的方式实现非侵入式追加
- *   - 所有注入操作均通过容错包装，失败不影响主流程
+ * 由于 CodeBuddy 使用 VS Code 内置侧边栏 Chat 面板，无法直接操作其 DOM，
+ * 本模块通过以下 VS Code 原生 UI 组件实现数据展示：
+ *
+ *   Feature 1 — 实时计时：StatusBar 状态栏实时刷新 ⏱ x.xs
+ *   Feature 2 — 统计表格：OutputChannel 输出面板显示 Markdown 表格
+ *   Feature 3 — /sum 汇总：OutputChannel + 可选通知弹窗
+ *
+ * 注入策略优先级：
+ *   1. StatusBar（实时计时，低干扰）
+ *   2. OutputChannel（详细统计，结构化输出）
+ *   3. showInformationMessage（重要事件提醒，可选）
  */
 
-// import * as vscode from 'vscode'; // vscode 未直接使用，通过 guardSync 间接容错
-import { logError, guardSync } from '../utils/errorGuard';
+import * as vscode from 'vscode';
+import { logInfo, logError, logDebug, getOutputChannelInstance } from '../utils/errorGuard';
 
 // ─── 类型定义 ───────────────────────────────────────
-
-/** 注入目标面板的引用信息 */
-export interface ChatPanelRef {
-  /** Webview panel 实例（如果可获取） */
-  webviewPanel?: unknown;
-  /** 面板类型标识 */
-  panelType: 'chat' | 'inline';
-}
 
 /** 注入操作结果 */
 export interface InjectResult {
@@ -27,191 +25,161 @@ export interface InjectResult {
   error?: string;
 }
 
-// ─── 核心注入方法 ────────────────────────────────────
+/** 状态栏项引用 */
+let _statusBarItem: vscode.StatusBarItem | null = null;
+
+// ══════════════════════════════════════════════════════
+// 初始化 / 销毁（由 vsextension 调用）
+// ══════════════════════════════════════════════════════
 
 /**
- * [方法 1] 定位当前 AI 输出的最后一行
+ * 初始化注入器（在 activate 时调用一次）
+ * 创建 StatusBar 项用于 Feature 1 实时计时显示
+ */
+export function initInjector(): void {
+  if (_statusBarItem) return; // 避免重复创建
+
+  _statusBarItem = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Right,
+    100 // 优先级（越小越靠左）
+  );
+  _statusBarItem.name = 'CodeBuddy Timer';
+  _statusBarItem.command = 'codebuddy.enhance.showOutput'; // 点击打开日志
+  _statusBarItem.tooltip = 'CodeBuddy Enhance — 点击查看详情';
+
+  logInfo('[Injector] Initialized (StatusBar ready)');
+}
+
+/**
+ * 销毁注入器（在 deactivate 时调用）
+ */
+export function disposeInjector(): void {
+  if (_statusBarItem) {
+    _statusBarItem.dispose();
+    _statusBarItem = null;
+    logInfo('[Injector] Disposed');
+  }
+}
+
+// ══════════════════════════════════════════════════════
+// Feature 1: 实时计时 — StatusBar 显示
+// ══════════════════════════════════════════════════════
+
+/**
+ * 定位当前 AI 输出行（StatusBar 方案下返回占位标识符）
  *
- * 通过查询聊天面板 DOM 或维护内部状态来获取当前活跃的 AI 输出行。
- * 返回一个可用于后续追加/替换操作的行标识符。
- *
- * @returns 行标识符字符串，或 null 表示无法定位
+ * @returns 始终返回 '__statusbar__' 表示使用状态栏作为输出目标
  */
 export function locateCurrentOutputLine(): string | null {
-  try {
-    // 策略：尝试从全局上下文获取当前活跃的输出区域
-    // 实际实现将依赖 hook 层提供的面板引用
-    // 此处返回占位符，具体定位逻辑在集成时由 eventHookManager 提供
-    return '__current_line__';
-  } catch (e) {
-    logError('Failed to locate current output line', e);
-    return null;
-  }
+  return '__statusbar__';
 }
 
 /**
- * [方法 2] 在指定行尾动态追加实时计时文案
+ * 在状态栏动态更新实时计时文案
  *
- * 每次调用会先清除上一次的追加内容再写入新值，
- * 实现"刷新"效果而非重复叠加。
- *
- * @param lineId     目标行标识符
- * @param displayText 要追加的文本 (如 " ⏱ 3.2s")
+ * @param lineId     目标标识（忽略，统一使用 StatusBar）
+ * @param displayText 要显示的文本 (如 "⏱ 3.2s")
  */
 export function appendDynamicText(lineId: string, displayText: string): InjectResult {
-  return guardSync<InjectResult>(
-    () => {
-      if (!lineId) {
-        return { success: false, error: 'lineId is empty' };
-      }
-
-      // 通过 VS Code Command / Webview postMessage 执行注入
-      const script = buildAppendScript(lineId, displayText);
-      executeInjectScript(script);
-
-      return { success: true };
-    },
-    { success: false, error: 'appendDynamicText failed' },
-    'chatInjector.appendDynamicText'
-  );
-}
-
-/**
- * [方法 3] 替换行尾文案为最终固定值
- *
- * 对话结束后调用，将动态计时替换为最终耗时 + Token 数量。
- *
- * @param lineId       目标行标识符
- * @param finalText    最终要显示的文本
- */
-export function replaceLineTailText(lineId: string, finalText: string): InjectResult {
-  return guardSync<InjectResult>(
-    () => {
-      if (!lineId) {
-        return { success: false, error: 'lineId is empty' };
-      }
-
-      const script = buildReplaceScript(lineId, finalText);
-      executeInjectScript(script);
-
-      return { success: true };
-    },
-    { success: false, error: 'replaceLineTailText failed' },
-    'chatInjector.replaceLineTailText'
-  );
-}
-
-/**
- * [方法 4] 在聊天窗口末尾追加 Markdown 表格
- *
- * 用于 Feature 2 (单轮结束统计表) 和 Feature 3 (/sum 日汇总表)
- *
- * @param markdownTable Markdown 格式的表格字符串
- */
-export function appendMarkdownTable(markdownTable: string): InjectResult {
-  return guardSync<InjectResult>(
-    () => {
-      if (!markdownTable?.trim()) {
-        return { success: false, error: 'markdownTable is empty' };
-      }
-
-      // 通过 CodeBuddy 的消息接口或 webview postMessage 追加
-      const result = executeTableInjection(markdownTable);
-      return { success: true };
-    },
-    { success: false, error: 'appendMarkdownTable failed' },
-    'chatInjector.appendMarkdownTable'
-  );
-}
-
-// ─── 内部脚本构建 ────────────────────────────────────
-
-/**
- * 构建用于向 DOM 行尾追加/更新文本的 JS 脚本片段
- *
- * 在目标行的 .enhance-timer 元素上写入新文本；
- * 若元素不存在则创建并插入行尾。
- */
-function buildAppendScript(lineId: string, text: string): string {
-  return `
-    (function() {
-      var el = document.querySelector('[data-line-id="${lineId}"] .cb-enhance-timer');
-      if (!el) {
-        var parent = document.querySelector('[data-line-id="${lineId}"]');
-        if (!parent) return;
-        el = document.createElement('span');
-        el.className = 'cb-enhance-timer cb-enhance-inline';
-        parent.appendChild(el);
-      }
-      el.textContent = '${escapeJs(text)}';
-      el.setAttribute('data-enhance', 'timer');
-    })();
-  `;
-}
-
-/**
- * 构建替换行尾文案为最终值的脚本
- * 与 append 类似，但添加 .final 标记样式类
- */
-function buildReplaceScript(lineId: string, text: string): string {
-  return `
-    (function() {
-      var el = document.querySelector('[data-line-id="${lineId}"] .cb-enhance-timer');
-      if (!el) {
-        var parent = document.querySelector('[data-line-id="${lineId}"]');
-        if (!parent) return;
-        el = document.createElement('span');
-        el.className = 'cb-enhance-timer cb-enhance-final';
-        parent.appendChild(el);
-      }
-      el.className = 'cb-enhance-timer cb-enhance-final';
-      el.textContent = '${escapeJs(text)}';
-    })();
-  `;
-}
-
-/**
- * JS 字符串转义，防止 XSS 和脚本断裂
- */
-function escapeJs(str: string): string {
-  return str
-    .replace(/\\/g, '\\\\')
-    .replace(/'/g, "\\'")
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r');
-}
-
-// ─── 注入执行层（抽象） ──────────────────────────────
-
-/**
- * 执行注入脚本的实际方法
- *
- * 根据运行环境选择不同的注入策略：
- *   - 有 Webview 引用 → 通过 webview.postMessage 发送指令
- *   - 无 Webview → 通过 vscode.commands.executeCommand 触发
- *   - 均不可用 → 记录日志并降级处理
- */
-function executeInjectScript(script: string): void {
   try {
-    // 方案 A：通过命令触发 CodeBuddy 内部注入能力
-    // 实际集成时此处将调用 VS Code API
-    console.debug('[ChatInjector] executeInjectScript:', script.slice(0, 80));
-    // TODO: 接入实际的 webview / command 注入通道
+    if (!_statusBarItem) {
+      return { success: false, error: 'StatusBar not initialized' };
+    }
+
+    _statusBarItem.text = `$(clock) ${displayText}`;
+    _statusBarItem.show();
+
+    return { success: true };
   } catch (e) {
-    logError('executeInjectScript failed', e);
+    logError('[Injector] appendDynamicText failed', e);
+    return { success: false, error: String(e) };
   }
 }
 
 /**
- * 执行 Markdown 表格注入
+ * 替换状态栏文案为最终固定值（对话结束时调用）
+ *
+ * @param lineId    目标标识（忽略）
+ * @param finalText 最终要显示的文本
  */
-function executeTableInjection(markdown: string): boolean {
+export function replaceLineTailText(lineId: string, finalText: string): InjectResult {
   try {
-    console.debug('[ChatInjector] executeTableInjection:', markdown.slice(0, 100));
-    // TODO: 接入实际的表格注入通道（通过 CodeBuddy 消息系统）
-    return true;
+    if (!_statusBarItem) {
+      return { success: false, error: 'StatusBar not initialized' };
+    }
+
+    // 对话结束：显示完成标记 + 最终数据
+    _statusBarItem.text = `$(check) ${finalText}`;
+    
+    // 5 秒后自动隐藏（避免一直占用状态栏）
+    setTimeout(() => {
+      if (_statusBarItem && !_statusBarItem.text.includes('$(clock)')) {
+        _statusBarItem.hide();
+      }
+    }, 5000);
+
+    return { success: true };
   } catch (e) {
-    logError('executeTableInjection failed', e);
-    return false;
+    logError('[Injector] replaceLineTailText failed', e);
+    return { success: false, error: String(e) };
+  }
+}
+
+// ══════════════════════════════════════════════════════
+// Feature 2 & 3: 统计表格 — OutputChannel 显示
+// ══════════════════════════════════════════════════════
+
+/**
+ * 向输出通道写入 Markdown 内容（统计表格 / 日汇总等）
+ *
+ * 用于：
+ *   - Feature 2: 单轮对话结束后的统计表格
+ *   - Feature 3: /sum 日汇总命令的完整报告
+ *
+ * @param markdown Markdown 格式的字符串（表格、标题、说明文字等）
+ */
+export function appendMarkdownTable(markdown: string): InjectResult {
+  try {
+    if (!markdown?.trim()) {
+      return { success: false, error: 'markdownTable is empty' };
+    }
+
+    const outputChannel = getOutputChannelInstance();
+    
+    // 用分隔线包裹每次输出，便于区分不同轮次/命令
+    const separator = '─'.repeat(60);
+    outputChannel.appendLine('');
+    outputChannel.appendLine(separator);
+    outputChannel.append(markdown);
+    outputChannel.appendLine(separator);
+    outputChannel.appendLine('');
+
+    // 自动显示输出面板（用户可能没主动打开）
+    try {
+      outputChannel.show(true); // true = 保持焦点不抢走
+    } catch {
+      // show 可能失败，不影响数据写入
+    }
+
+    logDebug(`[Injector] Table written to OutputChannel (${markdown.length} chars)`);
+
+    return { success: true };
+  } catch (e) {
+    logError('[Injector] appendMarkdownTable failed', e);
+    return { success: false, error: String(e) };
+  }
+}
+
+// ══════════════════════════════════════════════════════
+// 辅助方法（兼容旧接口，保留但不推荐使用）
+// ══════════════════════════════════════════════════════
+
+/**
+ * 清除状态栏显示（会话切换 / 新对话开始时调用）
+ */
+export function clearDisplay(): void {
+  if (_statusBarItem) {
+    _statusBarItem.hide();
+    _statusBarItem.text = '';
   }
 }

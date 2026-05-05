@@ -16,7 +16,8 @@
  *   - 无数据: "—"
  */
 
-import type { DailyStats, TurnStats, TokenCount, TurnFinishStatus } from '../types/stats';
+import type { DailyStats, TurnStats, TokenCount } from '../types/stats';
+import { TurnFinishStatus } from '../types/stats';
 import { buildMarkdownTable } from './markdownTable';
 import { formatDuration } from '../core/timeTracker';
 

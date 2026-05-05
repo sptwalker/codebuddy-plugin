@@ -2,6 +2,8 @@
  * 事件类型定义
  */
 
+import type { TurnStats } from './stats';
+
 export enum ChatLifecycleEvent {
   REQUEST_START = 'codebuddy.enhance.requestStart',
   STREAM_CHUNK = 'codebuddy.enhance.streamChunk',

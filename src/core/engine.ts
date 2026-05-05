@@ -33,7 +33,8 @@
 import * as vscode from 'vscode';
 
 // 内部模块引用
-import type { TurnStats, TokenCount, TurnFinishStatus } from '../types/stats';
+import type { TurnStats, TokenCount } from '../types/stats';
+import { TurnFinishStatus } from '../types/stats';
 import { ChatLifecycleEvent, RequestStartPayload, StreamChunkPayload, ResponseEndPayload, RequestErrorPayload } from '../types/events';
 import { DEFAULT_CONFIG } from '../types/config';
 
@@ -55,7 +56,7 @@ import {
 import {
   cleanupManager, disposeEngineTimersOnly, disposeAllTimers,
   safeSetIntervalForEngine, TimerTag,
-} from './utils/cleanup';
+} from '../utils/cleanup';
 
 // Hook 层
 import { eventHookManager } from '../hook/eventHookManager';
@@ -136,7 +137,7 @@ export function initEngine(
 
   const cfg = { ...DEFAULT_CONFIG, ...config };
   // 将配置持久化到 globalState，供 storageManager 的 autoCleanup 使用
-  context.globalState.update('__enhance_config', cfg).then(() => {
+  Promise.resolve(context.globalState.update('__enhance_config', cfg)).then(() => {
     logDebug('[Engine] Config persisted to globalState');
   }).catch(() => { /* ignore */ });
 
@@ -144,7 +145,7 @@ export function initEngine(
   bindEventListeners();
 
   // 注册 /sum 命令处理器
-  import('./hook/commandInterceptor').then(({ setSumHandler }) => {
+  import('../hook/commandInterceptor').then(({ setSumHandler }) => {
     setSumHandler(() => handleSumCommand());
     logInfo('[Engine] /sum handler registered');
   });

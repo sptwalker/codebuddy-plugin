@@ -8,7 +8,7 @@ import type { TokenCount } from '../types/stats';
 import { logError, guardSync } from '../utils/errorGuard';
 
 // ─── tiktoken 动态导入缓存 ────────────────────────────────
-let tiktokenEncode: ((text: string) => number[]) | null = null;
+let tiktokenEncode: ((text: string) => ArrayLike<number>) | null = null;
 let tiktokenLoadPromise: Promise<boolean> | null = null;
 
 /**

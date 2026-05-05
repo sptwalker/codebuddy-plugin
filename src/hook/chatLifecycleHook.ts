@@ -115,7 +115,6 @@ function hookWebviewInstance(webview: vscode.Webview): void {
   });
 
   // 将 disposable 注册以便清理
-  registerTimer(disposable as unknown as ReturnType<typeof setTimeout>);
   logInfo(`[ChatLifecycleHook] Webview interceptor installed (${hookedWebviews.size} total)`);
 }
 

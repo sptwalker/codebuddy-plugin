@@ -8,7 +8,7 @@
  *   - 所有注入操作均通过容错包装，失败不影响主流程
  */
 
-import type { vscode } from 'vscode';
+// import * as vscode from 'vscode'; // vscode 未直接使用，通过 guardSync 间接容错
 import { logError, guardSync } from '../utils/errorGuard';
 
 // ─── 类型定义 ───────────────────────────────────────

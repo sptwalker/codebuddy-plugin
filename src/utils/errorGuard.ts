@@ -41,12 +41,11 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
 
 // ─── VS Code 输出通道 ──────────────────────────────────
 
-let _outputChannel: vscode.OutputChannel | null = null;
+let _outputChannel: vscode.OutputChannel | undefined;
 
 function getOutputChannel(): vscode.OutputChannel {
   if (!_outputChannel) {
-    _outputChannel = vscode.OutputChannel.create('CodeBuddy Enhance');
-    // 不自动 show，避免打扰用户；需要时通过命令面板打开
+    _outputChannel = vscode.window.createOutputChannel('CodeBuddy Enhance');
   }
   return _outputChannel;
 }
@@ -56,7 +55,7 @@ function getOutputChannel(): vscode.OutputChannel {
  */
 export function initOutputChannel(): void {
   if (!_outputChannel) {
-    _outputChannel = vscode.OutputChannel.create('CodeBuddy Enhance');
+    _outputChannel = vscode.window.createOutputChannel('CodeBuddy Enhance');
   }
 }
 
@@ -66,7 +65,7 @@ export function initOutputChannel(): void {
 export function disposeOutputChannel(): void {
   if (_outputChannel) {
     _outputChannel.dispose();
-    _outputChannel = null;
+    _outputChannel = undefined;
   }
 }
 
@@ -106,7 +105,7 @@ function emitLog(level: LogLevel, message: string, data?: unknown): void {
   }
 
   // VS Code 输出通道（仅 WARN 和以上写入通道，避免刷屏）
-  if (LEVEL_ORDER[level] >= LogLevel.WARN) {
+  if (LEVEL_ORDER[level] >= LEVEL_ORDER[LogLevel.WARN]) {
     try {
       getOutputChannel().appendLine(`${fullMsg}${dataStr}`);
     } catch { /* ignore */ }

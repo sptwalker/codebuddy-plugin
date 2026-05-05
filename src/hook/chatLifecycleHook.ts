@@ -370,33 +370,35 @@ export function installDocumentWatcher(): void {
       // ── 全局锁：统计文档注入期间跳过（防循环） ──
       if (_isInjectingStatsDoc) return;
 
-      // ── 排除普通文件编辑（噪音太多） ──
-      if (doc.uri.scheme === 'file') return;
+      // ── 排除普通文件、输出面板和本扩展统计/日志文档（防止日志自激循环） ──
+      if (
+        doc.uri.scheme === 'file' ||
+        doc.uri.scheme === 'output' ||
+        doc.uri.scheme === 'untitled' ||
+        doc.uri.scheme === 'vscode-output'
+      ) return;
 
-      // ★ 诊断：记录所有非 file 文档变更（首次各 scheme 只记录一次）
       const uriStr = doc.uri.toString();
+
+      // ── 目标匹配：只处理 Chat 相关的文档，非目标文档不打 INFO 日志 ──
+      const isTargetDoc =
+        doc.uri.scheme === 'codebuddy' ||
+        doc.uri.scheme === 'chat' ||
+        doc.uri.scheme === 'vscode-chat' ||
+        doc.uri.scheme === 'chat-sideloading-editor' ||
+        doc.uri.path.toLowerCase().includes('chat') ||
+        doc.uri.path.toLowerCase().includes('codebuddy');
+
+      if (!isTargetDoc) return;
+
+      logDebug(
+        `[DocWatch] target change | scheme="${doc.uri.scheme}"` +
+        ` | lang="${doc.languageId ?? '?'}"` +
+        ` | path="${doc.uri.path.slice(-40)}"`
+      );
 
       for (const change of e.contentChanges) {
         if (!change.text || change.text.trim().length === 0) continue;
-
-        // ★ 诊断日志：记录每个非 file 变更（INFO 级别确保可见）
-        logInfo(
-          `[DocWatch] change | scheme="${doc.uri.scheme}"` +
-          ` | lang="${doc.languageId ?? '?'}"` +
-          ` | path="${doc.uri.path.slice(-40)}"` +
-          ` | text="${change.text.replace(/\n/g, '\\n').slice(0, 60)}"`
-        );
-
-        // ── 目标匹配：只处理 Chat 相关的文档 ──
-        const isTargetDoc =
-          doc.uri.scheme === 'codebuddy' ||
-          doc.uri.scheme === 'chat' ||
-          doc.uri.scheme === 'vscode-chat' ||
-          doc.uri.scheme === 'chat-sideloading-editor' ||
-          doc.uri.path.toLowerCase().includes('chat') ||
-          doc.uri.path.toLowerCase().includes('codebuddy');
-
-        if (!isTargetDoc) continue; // 不是目标文档，只记日志不触发事件
 
         // ── 事件触发逻辑 ──
         if (!session.isStreaming && session.currentRequestId === null) {

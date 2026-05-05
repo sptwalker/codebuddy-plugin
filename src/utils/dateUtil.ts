@@ -3,18 +3,26 @@
  * 提供 YYYY-MM-DD 格式化、跨日判断等能力
  */
 
-/** 获取当前本地日期，格式 YYYY-MM-DD */
-export function getTodayStr(): string {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
 }
 
-/** 获取当前本地时间 ISO 字符串 */
+/** 获取当前本地日期，格式 YYYY-MM-DD */
+export function getTodayStr(): string {
+  return formatDate(new Date());
+}
+
+/** 获取当前本地时间字符串，格式 YYYY-MM-DDTHH:mm:ss.sss */
 export function getNowISO(): string {
-  return new Date().toISOString();
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = pad2(now.getMonth() + 1);
+  const d = pad2(now.getDate());
+  const h = pad2(now.getHours());
+  const min = pad2(now.getMinutes());
+  const s = pad2(now.getSeconds());
+  const ms = String(now.getMilliseconds()).padStart(3, '0');
+  return `${y}-${m}-${d}T${h}:${min}:${s}.${ms}`;
 }
 
 /**
@@ -29,10 +37,7 @@ export function isToday(dateStr: string): boolean {
 export function getDaysAgo(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() - days);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  return formatDate(d);
 }
 
 /** 判断 dateStr 是否早于 daysAgo 天前（用于自动清理） */
@@ -46,7 +51,7 @@ export function isOlderThan(dateStr: string, days: number): boolean {
  */
 export function formatDate(date: Date): string {
   const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
+  const m = pad2(date.getMonth() + 1);
+  const d = pad2(date.getDate());
   return `${y}-${m}-${d}`;
 }

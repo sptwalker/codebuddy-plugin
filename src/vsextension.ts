@@ -18,6 +18,8 @@
 import * as vscode from 'vscode';
 import { initEngine, disposeEngine } from './core/engine';
 import { installHooks, uninstallHooks } from './hook/chatLifecycleHook';
+import { installOfficialHookBridge, uninstallOfficialHookBridge } from './hook/officialHookBridge';
+import { eventHookManager } from './hook/eventHookManager';
 import { installCommandInterceptor, uninstallCommandInterceptor } from './hook/commandInterceptor';
 import { initInjector, disposeInjector } from './core/chatInjector';
 import {
@@ -52,7 +54,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     initEngine(context);
 
     // ── Step 2: 安装事件钩子层 ────────────────────
-    // 三策略：Webview postMessage 拦截 > Command 拦截 > Document 监听
+    // 官方 Hook 文件桥接为主，Webview 监听作为 IDE 内兜底。
+    installOfficialHookBridge(context);
     installHooks('auto');
 
     // ── Step 3: 安装 /sum 命令拦截器 ──────────────
@@ -67,6 +70,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       () => { showOutputChannel(); }
     );
     cmdDisposables.push(showOutputCmd);
+    // 注册手动测试命令：直接触发 E1，验证 Engine + StatusBar 是否正常
+    const testTimerCmd = vscode.commands.registerCommand(
+      'codebuddy.enhance.testTimer',
+      () => {
+        const requestId = `manual-test-${Date.now()}`;
+        logInfo(`[Entry] Manual test timer command invoked | requestId=${requestId}`);
+        eventHookManager.emitRequestStart({
+          timestamp: performance.now(),
+          userMessage: 'manual test',
+          requestId,
+        });
+      }
+    );
+    cmdDisposables.push(testTimerCmd);
+
+
 
     // 注册 showStatsPanel 命令（打开/聚焦统计文档）
     const showStatsCmd = vscode.commands.registerCommand(
@@ -144,6 +163,7 @@ export function deactivate(): void {
     uninstallCommandInterceptor();
 
     // 2. 卸载事件钩子
+    uninstallOfficialHookBridge();
     uninstallHooks();
 
     // 3. 销毁 UI 注入通道（StatusBar）

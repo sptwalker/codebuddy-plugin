@@ -96,6 +96,8 @@ interface ActiveTurnContext {
   // ─── chunk 超时自动结束检测 ───
   /** 上次收到 chunk 的时间戳（用于超时判断） */
   lastChunkTimeMs: number;
+  /** chunk 超时等待日志是否已输出（避免无 Stop 测试时刷屏） */
+  chunkTimeoutSkipLogged: boolean;
   /** chunk 超时检测定时器 ID */
   chunkTimeoutId: ReturnType<typeof setTimeout> | null;
 }
@@ -272,6 +274,7 @@ function handleRequestStart(payload: RequestStartPayload): void {
     accumulatedResponseText: '',
     finishStatus: TurnFinishStatus.NORMAL,
     lastChunkTimeMs: performance.now(),
+    chunkTimeoutSkipLogged: false,
     chunkTimeoutId: null,
   };
 
@@ -370,11 +373,19 @@ function resetChunkTimeout(): void {
 
     // ★ 安全守卫：累计响应文本太短 → 不触发自动结束（可能是 AI 还在思考/排队）
     if (_ctx.accumulatedResponseText.length < MIN_AUTO_END_RESPONSE_LEN) {
-      logInfo(
-        `[Engine] ⏱ CHUNK_TIMEOUT_SKIPPED | turn=${_ctx.turnId}` +
-        ` | responseLen=${_ctx.accumulatedResponseText.length} chars (threshold=${MIN_AUTO_END_RESPONSE_LEN})` +
-        ` | 重置超时等待更多 chunk...`
-      );
+      if (!_ctx.chunkTimeoutSkipLogged) {
+        logInfo(
+          `[Engine] ⏱ CHUNK_TIMEOUT_WAITING | turn=${_ctx.turnId}` +
+          ` | responseLen=${_ctx.accumulatedResponseText.length} chars (threshold=${MIN_AUTO_END_RESPONSE_LEN})` +
+          ` | 等待 Stop 或更多 chunk...`
+        );
+        _ctx.chunkTimeoutSkipLogged = true;
+      } else {
+        logDebug(
+          `[Engine] ⏱ CHUNK_TIMEOUT_WAITING_SUPPRESSED | turn=${_ctx.turnId}` +
+          ` | responseLen=${_ctx.accumulatedResponseText.length} chars`
+        );
+      }
       // 不重置为 IDLE，而是重新启动超时检测
       resetChunkTimeout();
       return;
@@ -501,7 +512,7 @@ async function handleResponseEnd(payload: ResponseEndPayload): Promise<void> {
   }
 
   // ── Step 5: 构造 TurnStats 并持久化 ──
-  const turnStats = buildTurnStats(finalDurationMs, durationReadable, tokenCount);
+  const turnStats = buildTurnStats(_ctx, finalDurationMs, durationReadable, tokenCount);
   await persistTurnStats(turnStats);
 
   // ── Step 6: 追加统计 Markdown 表格到聊天面板 (Feature 2) ──
@@ -535,15 +546,18 @@ async function handleResponseEnd(payload: ResponseEndPayload): Promise<void> {
  *   5. 输出中断状态统计表格
  */
 async function handleSessionChange(): Promise<void> {
-  if (_state === EngineState.IDLE) return;
+  if (_state === EngineState.IDLE || !_ctx) return;
 
-  const activeTurn = _ctx!;
+  const activeTurn = _ctx;
   logInfo(
     `[Engine] E4 🔀 SESSION_CHANGE | turn=${activeTurn.turnId}` +
     ` | state=${_state}` +
     ` | elapsedSoFar=${formatDuration(getElapsedMs(activeTurn.timer))}`
   );
   activeTurn.finishStatus = TurnFinishStatus.INTERRUPTED;
+
+  destroyRefreshTimer();
+  clearChunkTimeout();
 
   // 停止计时
   const elapsedMs = stopTimer(activeTurn.timer);
@@ -555,19 +569,20 @@ async function handleSessionChange(): Promise<void> {
     replaceLineTailText(activeTurn.lineId, interruptedDisplay.trim());
   }
 
+  // 先释放当前上下文，避免后续异步持久化与新一轮 REQUEST_START 串状态
+  resetToIdle();
+
   // ★ 用已累计文本估算 Token（即使中断也有部分数据可记录）
   const estimatedToken = await estimatePartialTokens(activeTurn);
 
   // 构造统计并持久化
-  const turnStats = buildTurnStats(elapsedMs, durationReadable, estimatedToken);
+  const turnStats = buildTurnStats(activeTurn, elapsedMs, durationReadable, estimatedToken);
   await persistTurnStats(turnStats); // ★ 第六阶段：中断场景也持久化
 
   // 注入统计表格
   injectTurnSummaryTable(turnStats);
 
-  // ★ 强制清理所有 Engine 相关定时器（内存泄漏防护）
-  disposeEngineTimersOnly();
-  logDebug(`[Engine] E4 Engine timers disposed | remaining global=${cleanupManager.size}`);
+  logDebug(`[Engine] E4 completed | remaining global=${cleanupManager.size}`);
 
   logInfo(
     `[Engine] E4 ⚠️ TURN_INTERRUPTED | turn=${activeTurn.turnId}` +
@@ -575,8 +590,6 @@ async function handleSessionChange(): Promise<void> {
     ` | estTokens=${estimatedToken.totalTokens}` +
     ` | responseLen=${activeTurn.accumulatedResponseText.length} chars`
   );
-
-  resetToIdle();
 }
 
 /**
@@ -595,9 +608,9 @@ async function handleSessionChange(): Promise<void> {
  *   5. 输出错误状态统计表格
  */
 async function handleRequestError(payload: RequestErrorPayload): Promise<void> {
-  if (_state === EngineState.IDLE) return;
+  if (_state === EngineState.IDLE || !_ctx) return;
 
-  const activeTurn = _ctx!;
+  const activeTurn = _ctx;
   const errMsg = String(payload.error ?? 'Unknown error');
   logWarn(
     `[Engine] E5 ❌ REQUEST_ERROR | turn=${activeTurn.turnId}` +
@@ -605,6 +618,9 @@ async function handleRequestError(payload: RequestErrorPayload): Promise<void> {
     ` | state=${_state}`
   );
   activeTurn.finishStatus = TurnFinishStatus.ERROR;
+
+  destroyRefreshTimer();
+  clearChunkTimeout();
 
   // 停止计时
   const elapsedMs = stopTimer(activeTurn.timer);
@@ -616,19 +632,20 @@ async function handleRequestError(payload: RequestErrorPayload): Promise<void> {
     replaceLineTailText(activeTurn.lineId, errorDisplay.trim());
   }
 
+  // 先释放当前上下文，避免后续异步持久化与新一轮事件串状态
+  resetToIdle();
+
   // ★ 用已累计文本估算 Token（即使失败也有部分数据）
   const estimatedToken = await estimatePartialTokens(activeTurn);
 
   // 构造统计并持久化
-  const turnStats = buildTurnStats(elapsedMs, durationReadable, estimatedToken);
-  await persistTurnStats(turnStats); // ★ 第六阶段：错误场景也持久化
+  const turnStats = buildTurnStats(activeTurn, elapsedMs, durationReadable, estimatedToken);
+  await persistTurnStats(turnStats);
 
   // 注入统计表格
   injectTurnSummaryTable(turnStats);
 
-  // ★ 强制清理所有 Engine 相关定时器
-  disposeEngineTimersOnly();
-  logDebug(`[Engine] E5 Engine timers disposed | remaining global=${cleanupManager.size}`);
+  logDebug(`[Engine] E5 completed | remaining global=${cleanupManager.size}`);
 
   logInfo(
     `[Engine] E5 ❌ TURN_ERROR | turn=${activeTurn.turnId}` +
@@ -637,8 +654,6 @@ async function handleRequestError(payload: RequestErrorPayload): Promise<void> {
     ` | responseLen=${activeTurn.accumulatedResponseText.length} chars` +
     ` | error=${errMsg}`
   );
-
-  resetToIdle();
 }
 
 // ══════════════════════════════════════════════════════
@@ -794,26 +809,24 @@ async function estimatePartialTokens(ctx: ActiveTurnContext): Promise<TokenCount
 }
 
 /** 构造 TurnStats 数据对象 */
-function buildTurnStats(durationMs: number, durationReadable: string, tokenCount: TokenCount): TurnStats {
-  if (!_ctx) throw new Error('[Engine] buildTurnStats called with no active context');
-
-  const responseLen = _ctx.accumulatedResponseText.length;
+function buildTurnStats(ctx: ActiveTurnContext, durationMs: number, durationReadable: string, tokenCount: TokenCount): TurnStats {
+  const responseLen = ctx.accumulatedResponseText.length;
   const durationSec = Math.max(0.001, durationMs / 1000);
   const outputSpeed = responseLen / durationSec;
 
   return {
-    turnId: _ctx.turnId,
-    startTime: _ctx.startTimeISO,
+    turnId: ctx.turnId,
+    startTime: ctx.startTimeISO,
     endTime: getNowISO(),
     durationMs,
     durationReadable,
     tokenCount,
-    userMessagePreview: truncatePreview(_ctx.userMessage),
-    ttftMs: _ctx.ttftMs,
-    ttftReadable: formatDuration(_ctx.ttftMs),
+    userMessagePreview: truncatePreview(ctx.userMessage),
+    ttftMs: ctx.ttftMs,
+    ttftReadable: formatDuration(ctx.ttftMs),
     responseLength: responseLen,
     outputSpeedCharsPerSec: outputSpeed,
-    finishStatus: _ctx.finishStatus,
+    finishStatus: ctx.finishStatus,
   };
 }
 

@@ -2,7 +2,7 @@
 
 > 项目：VS Code 扩展 — CodeBuddy 对话实时计时与统计
 > 版本：v0.1.0 (dev)
-> 最后更新：2026-05-05
+> 最后更新：2026-05-06
 
 ---
 
@@ -231,23 +231,84 @@ function appendToStatsDocument(markdown: string): void {
 
 ---
 
+### 📅 第六轮：官方 Hook 桥接与真实链路验证
+
+**日期**：2026-05-06
+
+**用户反馈**：
+1. ❌ 在对话窗口提问后，输出窗口没有任何新信息
+2. ✅ 修复配置后，在当前窗口发送真实 CodeBuddy 对话，测试窗口输出面板可看到对应事件
+3. ⚠️ 本轮统计可生成，但 completion tokens / TTFT / 流式速度仍为空或 0
+
+**核心修复**：
+
+##### 1. 引入官方 Hook 文件桥接
+- 新增 `src/hook/officialHookBridge.ts`
+- 监听 `.codebuddy/codebuddy-enhance-events.jsonl`
+- 将官方 Hook 事件转为内部事件模型：
+  - `UserPromptSubmit` → `REQUEST_START`
+  - `Stop` / `SubagentStop` → `RESPONSE_END`
+  - `SessionEnd` → session change
+  - `StopFailure` → request error
+
+##### 2. 新增 Hook 脚本与配置
+- 新增 `scripts/codebuddy-enhance-hook.cjs`，从 stdin 读取官方 Hook JSON 并写入 JSONL
+- `.codebuddy/settings.json` 注册 `UserPromptSubmit` / `Stop` / `SubagentStop` / `SessionEnd` / `StopFailure`
+- Hook command 改为绝对路径，规避 `$CODEBUDDY_PROJECT_DIR` 未展开导致脚本不执行
+
+##### 3. 扩展入口接入
+- `src/vsextension.ts` 中安装 / 卸载官方桥接：
+  - `installOfficialHookBridge(context)`
+  - `uninstallOfficialHookBridge()`
+- `installHooks('webview')` 调整为 `installHooks('auto')`，保留 Webview / Document 诊断兜底
+- 新增 `codebuddy.enhance.testTimer` 手动测试命令
+
+##### 4. 日期与统计修复
+- `src/utils/dateUtil.ts` 改为本地日期 `YYYY-MM-DD`，修复 UTC 日期错桶
+- 真实日志确认写入 `date=2026-05-06`
+- `src/core/engine.ts` 增强 E1/E3/TOKEN/PERSIST 日志，便于确认生命周期闭环
+
+**验证结果**：
+- ✅ 官方 Hook 链路已打通：真实 CodeBuddy 对话可触发 `UserPromptSubmit` 和 `Stop`
+- ✅ 状态栏计时正常启动 / 结束
+- ✅ 本轮统计表正常生成
+- ✅ `/sum` 汇总命令可被识别并抑制为普通请求
+- ✅ 日期写入已使用本地日期
+
+**当前限制确认**：
+- 官方 `Stop` payload 不包含 `transcript_path`
+- Hook 环境变量未提供 transcript / chat / conversation 路径
+- 因无回复正文和流式 chunk，暂无法准确计算：
+  - completion tokens
+  - TTFT
+  - 流式输出速度
+- Webview / Document watcher 只能监听扩展所在窗口；当前真实 CodeBuddy 在主窗口、Enhance 在测试窗口时，只有 JSONL Hook 可跨窗口工作
+
+**下一步建议**：
+1. 将开发版扩展打包为 VSIX 并安装到真实 CodeBuddy 所在窗口
+2. 或在 Extension Development Host 测试窗口中同时运行 CodeBuddy
+3. 在同窗口环境继续验证 Webview / Document fallback 是否能捕获回复正文或流式输出
+
+
+
 ## 三、待解决问题
 
-### 🔴 关键问题：Chat 文档类型未知
-当前最大的不确定性是 **VS Code 内置 Chat 面板使用的具体 URI scheme / 文档类型**。
+### 🔴 关键限制：官方 Hook 不提供回复正文
+当前官方 Hook 已能稳定提供 `UserPromptSubmit` / `Stop` 生命周期边界，但 `Stop` 事件没有 `transcript_path`，环境变量中也没有 transcript / chat / conversation 路径，因此无法从官方 Hook 直接获得 AI 回复正文。
+
+**影响**：
+- completion tokens 暂为 0
+- TTFT 暂无法计算
+- 流式输出速度暂无法计算
 
 **下一步诊断计划**：
-1. 用户执行 F5 重启扩展
-2. 打开 Output Log（CodeBuddy Enhance 输出通道）
-3. 发送一条 Chat 消息
-4. 观察以下日志输出：
-   - `[DocWatch] change | scheme="..."` — 确定 Chat 文档的实际 scheme
-   - `[ChatLifecycleHook] Webview msg type="..."` — 确定 Webview 消息协议
-   - `[Engine] ★★★ E1 REQUEST_START RECEIVED` — 确认是否成功触发 E1
+1. 在真实 CodeBuddy 与 CodeBuddy Enhance 同窗口运行
+2. 继续观察 Webview / Document watcher 是否能捕获 Chat 回复正文或 chunk
+3. 若同窗口仍无法捕获，则需要寻找 CodeBuddy 插件公开 API、日志文件或可订阅事件作为新数据源
 
 ### 🟡 次要问题
 - [ ] Feature 1 计时器目前仅在 StatusBar 显示，尚未实现在 Chat 窗口文本行尾追加
-- [ ] /sum 命令补全功能待验证
+- [ ] completion tokens / TTFT / 流式速度依赖回复正文或流式 chunk，待新数据源确认
 - [ ] 多语言支持（当前仅中文）
 
 ---
@@ -257,10 +318,15 @@ function appendToStatsDocument(markdown: string): void {
 | 文件 | 变更类型 | 主要改动 |
 |------|----------|----------|
 | `src/core/chatInjector.ts` | 重写 | WebviewPanel → Untitled Markdown Doc；注入锁 |
+| `src/hook/officialHookBridge.ts` | 新增 | 监听官方 Hook JSONL；转换 `UserPromptSubmit` / `Stop` 等事件为内部生命周期事件 |
+| `scripts/codebuddy-enhance-hook.cjs` | 新增 | 接收官方 Hook stdin payload；写入 `.codebuddy/codebuddy-enhance-events.jsonl`；记录环境诊断 |
+| `.codebuddy/settings.json` | 新增/配置 | 注册 CodeBuddy 官方 Hooks；使用绝对路径调用 hook 脚本 |
 | `src/hook/chatLifecycleHook.ts` | 大幅修改 | Command 禁用；DocWatch 诊断模式；周期性 Webview 扫描；去重锁；注入锁 |
-| `src/core/engine.ts` | 参数调整 | CHUNK_TIMEOUT=10s；MIN_AUTO_END_LEN=5；clearDisplay on E1；★★★日志 |
-| `src/vsextension.ts` | 中度修改 | 移除 statsPanel；动态 import；show/close 命令重写 |
-| `package.json` | 小改 | keybinding when 条件移除 |
+| `src/core/engine.ts` | 参数与诊断增强 | CHUNK_TIMEOUT=10s；MIN_AUTO_END_LEN=5；本轮生命周期日志；token 解析日志 |
+| `src/utils/dateUtil.ts` | 修复 | 使用本地日期 `YYYY-MM-DD`，修复 UTC 错桶 |
+| `src/vsextension.ts` | 中度修改 | 接入 OfficialHookBridge；auto hooks；新增手动测试命令 |
+| `src/hook/index.ts` | 小改 | 导出官方 Hook 桥接模块 |
+| `package.json` | 小改 | keybinding when 条件移除；新增测试命令激活事件 |
 
 ---
 
@@ -283,6 +349,13 @@ function appendToStatsDocument(markdown: string): void {
 - **背景**：统计文档创建被 Document Watcher 捕获形成无限循环
 - **实现**：`_isInjectingStatsDoc` 布尔锁 + try/finally 保护
 - **效果**：彻底阻断 E3→DocWatch→E1 循环链路
+
+### 决策 #4：采用官方 Hook JSONL 桥接
+- **时间**：第六轮迭代
+- **背景**：开发扩展运行在 Extension Development Host 测试窗口，真实 CodeBuddy 对话发生在主窗口，Webview / Document watcher 无法跨窗口捕获
+- **实现**：`.codebuddy/settings.json` 注册官方 Hook，`scripts/codebuddy-enhance-hook.cjs` 写入 JSONL，`officialHookBridge.ts` 监听并转换事件
+- **效果**：真实 CodeBuddy 对话可稳定触发 E1/E3，状态栏计时和统计表恢复可用
+- **限制**：官方 Hook 当前不提供 `transcript_path` 和流式 chunk，无法直接计算 completion tokens / TTFT / 输出速度
 
 ---
 
@@ -322,4 +395,4 @@ git push origin main
 
 ---
 
-*本日志由开发助手自动生成，记录了从初始构建到第五轮诊断的完整迭代过程。*
+*本日志由开发助手自动生成，记录了从初始构建到第六轮官方 Hook 桥接验证的完整迭代过程。*

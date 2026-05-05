@@ -1,0 +1,59 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"d:/Users/pc/Documents/walker/CodeBuddy/codybuddy-plugin/scripts/codebuddy-enhance-hook.cjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"d:/Users/pc/Documents/walker/CodeBuddy/codybuddy-plugin/scripts/codebuddy-enhance-hook.cjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"d:/Users/pc/Documents/walker/CodeBuddy/codybuddy-plugin/scripts/codebuddy-enhance-hook.cjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"d:/Users/pc/Documents/walker/CodeBuddy/codybuddy-plugin/scripts/codebuddy-enhance-hook.cjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"d:/Users/pc/Documents/walker/CodeBuddy/codybuddy-plugin/scripts/codebuddy-enhance-hook.cjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

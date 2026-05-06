@@ -292,6 +292,9 @@ function handleRequestStart(payload: RequestStartPayload): void {
   // 定位当前输出行
   _ctx.lineId = locateCurrentOutputLine();
 
+  // ★ 初始化 Webview 统计面板（仅此一处负责创建，后续 update 方法不再重复创建）
+  try { getOrCreateStatsPanel(); } catch { /* non-critical */ }
+
   // 重置节流缓存
   _lastDisplayedMs = -1;
   _lastDisplayStr = '';

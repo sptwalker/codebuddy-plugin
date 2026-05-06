@@ -21,30 +21,29 @@ let _panel: vscode.WebviewPanel | null = null;
 let _currentHtml = '';
 
 // ══════════════════════════════════════════════════════
-// 公共 API
+// 公共 API — 生命周期
 // ══════════════════════════════════════════════════════
 
 /**
- * 获取或创建统计面板
+ * 初始化/获取统计面板（幂等）
+ * 同一时间只存在一个实例；必须先调用此方法再调用其他 update 方法
  */
 export function getOrCreateStatsPanel(): vscode.WebviewPanel {
   if (_panel) {
-    _panel.reveal(vscode.ViewColumn.Beside); // 在旁边显示
+    try { _panel.reveal(vscode.ViewColumn.Beside); } catch { /* disposed */ }
     return _panel;
   }
 
   _panel = vscode.window.createWebviewPanel(
-    'codebuddyEnhanceStats',          // 内部标识
-    '📊 CodeBuddy 统计',             // 标题
-    vscode.ViewColumn.Beside,        // 在编辑器旁显示
-    { enableScripts: true, retainContextWhenHidden: true } // 保留状态
+    'codebuddyEnhanceStats',
+    '📊 CodeBuddy 统计',
+    vscode.ViewColumn.Beside,
+    { enableScripts: true, retainContextWhenHidden: true }
   );
 
-  // 设置初始 HTML
   _panel.webview.html = getBaseHtml();
   _currentHtml = '';
 
-  // 面板关闭时清理引用
   _panel.onDidDispose(() => {
     _panel = null;
     logDebug('[StatsPanel] Disposed');
@@ -65,11 +64,15 @@ export function closeStatsPanel(): void {
 }
 
 /**
- * 检查面板是否已打开且可见
+ * 检查面板当前是否可用（不触发创建）
  */
 export function isStatsPanelVisible(): boolean {
-  return _panel?.visible ?? false;
+  if (!_panel) return false;
+  try { return _panel.visible; } catch { return false; }
 }
+
+/** 获取内部面板引用（供 Engine 直接使用，避免重复创建检查） */
+export function getPanelRef(): vscode.WebviewPanel | null { return _panel; }
 
 // ══════════════════════════════════════════════════════
 // 内容更新方法（供 Engine 调用）
@@ -82,13 +85,13 @@ export function isStatsPanelVisible(): boolean {
  * @param isFinal   是否为最终值（对话结束时 true）
  */
 export function updateTimerDisplay(elapsedMs: number, isFinal: boolean = false): void {
-  const panel = getOrCreateStatsPanel();
+  const panel = getPanelRef();
+  if (!panel) return; // 面板未初始化，静默跳过
 
   const seconds = (elapsedMs / 1000).toFixed(1);
   const icon = isFinal ? '✅' : '⏱';
   const className = isFinal ? 'timer-final' : 'timer-live';
 
-  // 使用 JS 注入更新 DOM（比全量 replace 快得多）
   panel.webview.postMessage({
     type: 'updateTimer',
     html: `<span class="${className}">${icon} ${seconds}s</span>`
@@ -97,25 +100,21 @@ export function updateTimerDisplay(elapsedMs: number, isFinal: boolean = false):
 
 /**
  * 设置最终结果（Token、速率等完整统计）
- *
- * @param finalDisplay 格式化后的最终文本
  */
 export function setFinalResult(finalDisplay: string): void {
-  const panel = getOrCreateStatsPanel();
+  const panel = getPanelRef();
+  if (!panel) return;
   panel.webview.postMessage({ type: 'setFinal', text: finalDisplay });
 }
 
 /**
  * 追加 Markdown 表格内容（Feature 2 / Feature 3）
- *
- * @param markdown Markdown 格式的表格/文本
  */
 export function appendMarkdownContent(markdown: string): void {
-  const panel = getOrCreateStatsPanel();
+  const panel = getPanelRef();
+  if (!panel) return;
 
-  // 将 Markdown 转 HTML（简单处理）
   const html = markdownToHtml(markdown);
-
   panel.webview.postMessage({
     type: 'appendContent',
     html: `<div class="stats-block">${html}</div>`
@@ -126,9 +125,9 @@ export function appendMarkdownContent(markdown: string): void {
  * 清除所有内容（新对话开始时调用）
  */
 export function clearContent(): void {
-  if (_panel) {
-    _panel.webview.postMessage({ type: 'clear' });
-  }
+  const panel = getPanelRef();
+  if (!panel) return;
+  panel.webview.postMessage({ type: 'clear' });
 }
 
 // ══════════════════════════════════════════════════════
@@ -270,21 +269,31 @@ function getBaseHtml(): string {
       width: 100%;
       border-collapse: collapse;
       font-size: 13px;
+      table-layout: fixed;  /* 固定列宽，防止内容撑开 */
     }
 
     .stats-block th {
       text-align: left;
-      padding: 4px 8px;
+      padding: 6px 10px;
       background: var(--bg-highlight);
       color: var(--text-secondary);
       font-weight: 500;
       border-bottom: 1px solid var(--border-color);
+      width: 60%;  /* 指标列占 60% */
+    }
+
+    .stats-block th:last-child,
+    .stats-block td:last-child {
+      width: 40%;  /* 数值列占 40% */
+      text-align: right;
+      font-family: 'Cascadia Code', 'Fira Code', 'Consolas', 'Courier New', monospace;
+      font-variant-numeric: tabular-nums;
     }
 
     .stats-block td {
-      padding: 4px 8px;
+      padding: 6px 10px;
       border-bottom: 1px solid rgba(255,255,255,0.05);
-      font-variant-numeric: tabular-nums;
+      vertical-align: middle;
     }
 
     .stats-block tr:hover td {

@@ -19,6 +19,12 @@ import { logInfo, logError, logDebug } from '../utils/errorGuard';
 let _panel: vscode.WebviewPanel | null = null;
 /** 当前显示的内容（用于增量更新，避免全量重渲染） */
 let _currentHtml = '';
+/**
+ * 用户是否主动关闭了面板
+ * true = 用户点了 X 关闭，不自动恢复
+ * false = 被编辑器布局变化等意外关闭，update 时自动恢复
+ */
+let _userClosed = false;
 
 // ══════════════════════════════════════════════════════
 // 公共 API — 生命周期
@@ -31,7 +37,6 @@ let _currentHtml = '';
  * ★ 面板重建时自动从 globalState 恢复今日历史记录
  */
 export async function getOrCreateStatsPanel(
-  /** 可选：ExtensionContext 用于恢复历史记录（首次创建时传入） */
   context?: vscode.ExtensionContext,
 ): Promise<vscode.WebviewPanel> {
   if (_panel) {
@@ -39,28 +44,15 @@ export async function getOrCreateStatsPanel(
     return _panel;
   }
 
-  _panel = vscode.window.createWebviewPanel(
-    'codebuddyEnhanceStats',
-    '📊 CodeBuddy Enhance',
-    vscode.ViewColumn.Active,          // 使用 Active 避免被 Beside 编辑器组挤掉
-    { enableScripts: true, retainContextWhenHidden: true }
-  );
+  // ★ 同步创建面板（立即可用）
+  createPanelSync();
 
-  _panel.webview.html = getBaseHtml();
-  _currentHtml = '';
-
-  // ★ 面板重建时，从持久化存储恢复今日历史记录
+  // ★ 异步恢复历史记录（不阻塞返回）
   if (context) {
-    await restoreHistoryFromStorage(context);
+    restoreHistoryFromStorage(context).catch(() => {});
   }
 
-  _panel.onDidDispose(() => {
-    _panel = null;
-    logDebug('[StatsPanel] Disposed');
-  });
-
-  logInfo('[StatsPanel] Created (with history restore)');
-  return _panel;
+  return _panel!;
 }
 
 /**
@@ -105,6 +97,7 @@ async function restoreHistoryFromStorage(context: vscode.ExtensionContext): Prom
  */
 export function closeStatsPanel(): void {
   if (_panel) {
+    _userClosed = true; // 标记用户主动关闭
     _panel.dispose();
     _panel = null;
   }
@@ -121,6 +114,60 @@ export function isStatsPanelVisible(): boolean {
 /** 获取内部面板引用（供 Engine 直接使用，避免重复创建检查） */
 export function getPanelRef(): vscode.WebviewPanel | null { return _panel; }
 
+/**
+ * 确保面板可用（供 update 方法调用）
+ * 如果面板因编辑器布局变化被意外关闭，自动重建并恢复
+ *
+ * @param context 可选 ExtensionContext（用于恢复历史记录）
+ * @returns 面板引用，如果用户主动关闭则返回 null
+ */
+export async function ensurePanelForUpdate(
+  context?: vscode.ExtensionContext,
+): Promise<vscode.WebviewPanel | null> {
+  if (_panel) return _panel;
+  if (_userClosed) return null;
+  logInfo('[StatsPanel] Auto-recovering panel (closed by editor layout change)');
+  return getOrCreateStatsPanel(context);
+}
+
+/**
+ * 同步版本 — 用于高频 update 方法（如 200ms 计时刷新）
+ * 不等待历史恢复（异步 fire-and-forget），立即返回面板引用
+ */
+function ensurePanelForUpdateSync(): vscode.WebviewPanel | null {
+  if (_panel) return _panel;
+  if (_userClosed) return null;
+  // 同步创建面板（不阻塞历史恢复）
+  createPanelSync();
+  return _panel;
+}
+
+/**
+ * 同步创建面板（不含历史恢复）
+ * 历史恢复通过 fire-and-forget 异步执行
+ */
+function createPanelSync(): void {
+  if (_panel) return;
+
+  _panel = vscode.window.createWebviewPanel(
+    'codebuddyEnhanceStats',
+    '📊 CodeBuddy Enhance',
+    vscode.ViewColumn.Beside,
+    { enableScripts: true, retainContextWhenHidden: true }
+  );
+
+  _panel.webview.html = getBaseHtml();
+  _currentHtml = '';
+  _userClosed = false;
+
+  _panel.onDidDispose(() => {
+    _panel = null;
+    logDebug(`[StatsPanel] Disposed | userClosed=${_userClosed}`);
+  });
+
+  logInfo('[StatsPanel] Created (sync, auto-recovery)');
+}
+
 // ══════════════════════════════════════════════════════
 // 内容更新方法（供 Engine 调用）
 // ══════════════════════════════════════════════════════
@@ -132,8 +179,8 @@ export function getPanelRef(): vscode.WebviewPanel | null { return _panel; }
  * @param isFinal   是否为最终值（对话结束时 true）
  */
 export function updateTimerDisplay(elapsedMs: number, isFinal: boolean = false): void {
-  const panel = getPanelRef();
-  if (!panel) return; // 面板未初始化，静默跳过
+  const panel = ensurePanelForUpdateSync();
+  if (!panel) return;
 
   const seconds = (elapsedMs / 1000).toFixed(1);
   const icon = isFinal ? '✅' : '⏱';
@@ -149,7 +196,7 @@ export function updateTimerDisplay(elapsedMs: number, isFinal: boolean = false):
  * 设置最终结果（Token、速率等完整统计）
  */
 export function setFinalResult(finalDisplay: string): void {
-  const panel = getPanelRef();
+  const panel = ensurePanelForUpdateSync();
   if (!panel) return;
   panel.webview.postMessage({ type: 'setFinal', text: finalDisplay });
 }
@@ -158,7 +205,7 @@ export function setFinalResult(finalDisplay: string): void {
  * 追加 Markdown 表格内容（Feature 2 / Feature 3）
  */
 export function appendMarkdownContent(markdown: string): void {
-  const panel = getPanelRef();
+  const panel = ensurePanelForUpdateSync();
   if (!panel) {
     logInfo('[StatsPanel] appendMarkdownContent: no panel available, skipping');
     return;
@@ -177,7 +224,7 @@ export function appendMarkdownContent(markdown: string): void {
  * 注意：不清空历史记录区，历史记录跨轮次累积
  */
 export function clearContent(): void {
-  const panel = getPanelRef();
+  const panel = ensurePanelForUpdateSync();
   if (!panel) return;
   panel.webview.postMessage({ type: 'clear' });
 }
@@ -193,7 +240,7 @@ export function appendHistoryEntry(entry: {
   message: string;    // 用户消息预览
   status: 'ok' | 'warn' | 'error';
 }): void {
-  const panel = getPanelRef();
+  const panel = ensurePanelForUpdateSync();
   if (!panel) return;
 
   const statusIcon = entry.status === 'ok' ? '✅' : entry.status === 'warn' ? '⚠️' : '❌';

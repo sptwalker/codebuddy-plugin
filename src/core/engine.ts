@@ -44,7 +44,7 @@ import {
   formatDuration, TimerState,
 } from './timeTracker';
 import { parseUsageFromAPI, estimateTokensLocally } from './tokenCounter';
-import { locateCurrentOutputLine, appendDynamicText, replaceLineTailText, appendMarkdownTable, clearDisplay } from './chatInjector';
+import { locateCurrentOutputLine, appendDynamicText, replaceLineTailText, clearDisplay } from './chatInjector';
 import { generateTurnSummaryTable } from '../renderer/summaryTable';
 import { formatRealTimeDisplay } from '../renderer/realTimeDisplay';
 import {
@@ -53,6 +53,7 @@ import {
   setFinalResult as webviewSetFinalResult,
   appendMarkdownContent as webviewAppendMarkdown,
   clearContent as webviewClear,
+  appendHistoryEntry as webviewAppendHistory,
   isStatsPanelVisible,
 } from './statsWebviewPanel';
 import { appendTurnStats } from '../storage/storageManager';
@@ -689,7 +690,7 @@ async function handleRequestError(payload: RequestErrorPayload): Promise<void> {
  *   1. 从 globalState 读取当日累计统计数据
  *   2. 无数据 → 友好提示「今日暂无对话统计数据」
  *   3. 有数据 → 渲染标准 Markdown 汇总表（主表 + 明细 + 时间戳）
- *   4. 通过 appendMarkdownTable 注入聊天面板
+ *   4. 通过 WebviewPanel 注入统计面板
  *
  * 统计字段：
  *   当日对话总轮次 / 合计总耗时 / 平均响应速度
@@ -717,7 +718,7 @@ async function handleSumCommand(): Promise<void> {
     // ── Step 2: 无数据友好提示 ──
     if (!dailyData.turns || dailyData.totalTurns === 0) {
       const emptyMsg = `\n\n### 📊 CodeBuddy 日统计 — ${todayStr}\n\n${EMPTY_DAY_MESSAGE}\n`;
-      appendMarkdownTable(emptyMsg);
+      try { webviewAppendMarkdown(emptyMsg); } catch { /* non-critical */ }
       logInfo('[Engine] /sum → empty day prompt shown');
       return;
     }
@@ -736,7 +737,7 @@ async function handleSumCommand(): Promise<void> {
     const footer = `\n\n> ⏰ 数据更新于 ${new Date().toLocaleString('zh-CN', { hour12: false })}`;
     const fullOutput = summaryMd + detailMd + footer;
 
-    appendMarkdownTable(fullOutput);
+    webviewAppendMarkdown(fullOutput);
 
     logInfo(
       `[Engine] /sum ✅ SUMMARY_RENDERED | turns=${dailyData.totalTurns}` +
@@ -747,7 +748,7 @@ async function handleSumCommand(): Promise<void> {
   } catch (e) {
     logError('[Engine] /sum execution failed', e);
     const errorMsg = '\n\n> ❌ 统计数据加载失败，请稍后重试。';
-    try { appendMarkdownTable(errorMsg); } catch { /* ignore */ }
+    try { webviewAppendMarkdown(errorMsg); } catch { /* ignore */ }
   }
 }
 
@@ -908,10 +909,22 @@ function injectTurnSummaryTable(turn: TurnStats): void {
         break;
     }
 
-    appendMarkdownTable(md + statusTag);
-
-    // ★ 同步注入 Webview 面板统计表格
+    // ★ 注入 Webview 面板统计表格（唯一注入目标）
     try { webviewAppendMarkdown(md + statusTag); } catch { /* non-critical */ }
+
+    // ★ 追加历史记录条目到滚动区
+    try {
+      const now = new Date();
+      const timeStr = now.toLocaleTimeString('zh-CN', { hour12: false });
+      webviewAppendHistory({
+        time: timeStr,
+        duration: turn.durationReadable,
+        tokens: String(turn.tokenCount.totalTokens),
+        message: turn.userMessagePreview || '(空)',
+        status: turn.finishStatus === TurnFinishStatus.NORMAL ? 'ok' :
+          turn.finishStatus === TurnFinishStatus.INTERRUPTED ? 'warn' : 'error',
+      });
+    } catch { /* non-critical */ }
 
     logInfo(`[Engine] Feature2 Table injected | status=${turn.finishStatus}`);
   } catch (e) {

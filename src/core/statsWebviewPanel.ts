@@ -123,11 +123,51 @@ export function appendMarkdownContent(markdown: string): void {
 
 /**
  * 清除所有内容（新对话开始时调用）
+ * 注意：不清空历史记录区，历史记录跨轮次累积
  */
 export function clearContent(): void {
   const panel = getPanelRef();
   if (!panel) return;
   panel.webview.postMessage({ type: 'clear' });
+}
+
+/**
+ * 追加一条紧凑的历史记录到历史滚动区
+ * 每轮对话结束后调用，历史记录跨会话累积
+ */
+export function appendHistoryEntry(entry: {
+  time: string;       // HH:mm:ss
+  duration: string;   // "12.3s"
+  tokens: string;     // "147"
+  message: string;    // 用户消息预览
+  status: 'ok' | 'warn' | 'error';
+}): void {
+  const panel = getPanelRef();
+  if (!panel) return;
+
+  const statusIcon = entry.status === 'ok' ? '✅' : entry.status === 'warn' ? '⚠️' : '❌';
+  const statusClass = entry.status === 'ok' ? 'status-normal' :
+    entry.status === 'warn' ? 'status-interrupted' : 'status-error';
+
+  panel.webview.postMessage({
+    type: 'appendHistory',
+    html: `<div class="history-item">
+      <span class="hi-time">${escapeHtmlAttr(entry.time)}</span>
+      <span class="hi-duration">${entry.duration}</span>
+      <span class="hi-tokens">${entry.tokens} tok</span>
+      <span class="hi-msg">${escapeHtmlAttr(entry.message)}</span>
+      <span class="hi-status ${statusClass}">${statusIcon}</span>
+    </div>`
+  });
+}
+
+/** HTML 属性转义（用于嵌入 HTML 属性值） */
+function escapeHtmlAttr(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 // ══════════════════════════════════════════════════════
@@ -344,12 +384,84 @@ function getBaseHtml(): string {
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: #555; }
+
+    /* ── 历史记录滚动区 ── */
+    .history-section {
+      margin-top: 20px;
+      border-top: 1px solid var(--border-color);
+      padding-top: 12px;
+    }
+
+    .history-section h2 {
+      font-size: 13px;
+      color: var(--text-secondary);
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .history-list {
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    .history-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      background: var(--bg-secondary);
+      border-radius: 4px;
+      margin-bottom: 4px;
+      font-size: 12px;
+      border-left: 3px solid var(--border-color);
+      transition: border-color 0.15s;
+    }
+
+    .history-item:hover {
+      border-left-color: var(--accent-blue);
+    }
+
+    .history-item .hi-time {
+      color: var(--text-secondary);
+      font-family: 'Cascadia Code', Consolas, monospace;
+      white-space: nowrap;
+      min-width: 60px;
+    }
+
+    .history-item .hi-duration {
+      color: var(--accent-yellow);
+      font-family: 'Cascadia Code', Consolas, monospace;
+      font-weight: 600;
+      white-space: nowrap;
+      min-width: 45px;
+    }
+
+    .history-item .hi-tokens {
+      color: var(--accent-green);
+      font-family: 'Cascadia Code', Consolas, monospace;
+      white-space: nowrap;
+      min-width: 50px;
+    }
+
+    .history-item .hi-msg {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--text-primary);
+    }
+
+    .history-item .hi-status {
+      font-size: 11px;
+      white-space: nowrap;
+    }
   </style>
 </head>
 <body>
   <div class="header">
     <h1>📊 CodeBuddy Enhance</h1>
-    <span class="version">v0.1.0</span>
+    <span class="version">v0.2.0</span>
   </div>
 
   <div id="timer" class="timer-section">
@@ -357,6 +469,11 @@ function getBaseHtml(): string {
   </div>
 
   <div id="content" class="content-area"></div>
+
+  <div class="history-section">
+    <h2>📜 对话历史</h2>
+    <div id="history" class="history-list"></div>
+  </div>
 
   <script>
     // 监听来自 ExtensionHost 的消息
@@ -390,7 +507,18 @@ function getBaseHtml(): string {
           document.getElementById('timer').innerHTML =
             '<div style="color: var(--text-secondary); font-size: 14px;">等待对话...</div>';
           document.getElementById('content').innerHTML = '';
+          // 注意：不清空历史记录区，历史记录跨轮次累积
           break;
+
+        case 'appendHistory': {
+          const historyContainer = document.getElementById('history');
+          const emptyHint = historyContainer.querySelector('.empty-hint');
+          if (emptyHint) emptyHint.remove();
+          historyContainer.insertAdjacentHTML('beforeend', msg.html);
+          // 自动滚动到最新条目
+          historyContainer.scrollTop = historyContainer.scrollHeight;
+          break;
+        }
       }
     });
 

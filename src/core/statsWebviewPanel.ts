@@ -527,16 +527,23 @@ function getBaseHtml(): string {
   </div>
 
   <script>
+    // ★ 防止 postMessage 竞态：setFinal 后忽略迟到的 updateTimer
+    let _timerFinalized = false;
+
     // 监听来自 ExtensionHost 的消息
     window.addEventListener('message', (event) => {
       const msg = event.data;
       
       switch (msg.type) {
         case 'updateTimer':
-          document.getElementById('timer').innerHTML = msg.html;
+          // ★ 一旦本轮已结束（setFinal 已发送），丢弃所有后续的 updateTimer 消息
+          if (!_timerFinalized) {
+            document.getElementById('timer').innerHTML = msg.html;
+          }
           break;
 
         case 'setFinal':
+          _timerFinalized = true; // 标记本轮已结束
           document.getElementById('timer').innerHTML =
             '<div class="timer-final">' +
             '<div style="font-size:32px;color:#4ec9b0;">✅</div>' +
@@ -555,6 +562,7 @@ function getBaseHtml(): string {
           break;
 
         case 'clear':
+          _timerFinalized = false; // 新对话开始，重置标志
           document.getElementById('timer').innerHTML =
             '<div style="color: var(--text-secondary); font-size: 14px;">等待对话...</div>';
           document.getElementById('content').innerHTML = '';

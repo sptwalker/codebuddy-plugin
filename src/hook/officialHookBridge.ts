@@ -255,17 +255,11 @@ async function handleStop(input: OfficialHookInput): Promise<void> {
   rememberProcessedStop(stopKey);
 
   if (!_activeTurn) {
-    const requestId = generateRequestId(input);
-    _activeTurn = {
-      requestId,
-      sessionId,
-      userMessage: '(official hook: prompt unavailable)',
-    };
-    eventHookManager.emitRequestStart({
-      timestamp: performance.now(),
-      userMessage: _activeTurn.userMessage,
-      requestId,
-    });
+    // ★ 不再自动创建幽灵 REQUEST_START（会导致面板计时器无法停止）
+    // 此情况通常发生在 /sum 等 internal command consumed 后的幽灵 Stop
+    const eventName = input.hook_event_name || 'Stop';
+    logInfo(`[OfficialHookBridge] ${eventName} ignored — no matching active turn (likely post-command ghost)`);
+    return;
   }
 
   // ─── Transcript 路径解析优先级 ─────────────────────────────

@@ -740,7 +740,14 @@ async function handleSumCommand(): Promise<void> {
     const footer = `\n\n> ⏰ 数据更新于 ${new Date().toLocaleString('zh-CN', { hour12: false })}`;
     const fullOutput = summaryMd + detailMd + footer;
 
-    webviewAppendMarkdown(fullOutput);
+    logInfo(`[Engine] /sum → appending to webview | panelVisible=${isStatsPanelVisible()} | outputLen=${fullOutput.length}`);
+
+    try {
+      webviewAppendMarkdown(fullOutput);
+      logInfo('[Engine] /sum → webviewAppendMarkdown succeeded');
+    } catch (e) {
+      logError('[Engine] /sum → webviewAppendMarkdown FAILED', e);
+    }
 
     logInfo(
       `[Engine] /sum ✅ SUMMARY_RENDERED | turns=${dailyData.totalTurns}` +

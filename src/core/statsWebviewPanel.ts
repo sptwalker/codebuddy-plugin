@@ -112,9 +112,13 @@ export function setFinalResult(finalDisplay: string): void {
  */
 export function appendMarkdownContent(markdown: string): void {
   const panel = getPanelRef();
-  if (!panel) return;
+  if (!panel) {
+    logInfo('[StatsPanel] appendMarkdownContent: no panel available, skipping');
+    return;
+  }
 
   const html = markdownToHtml(markdown);
+  logInfo(`[StatsPanel] appendMarkdownContent: sending ${html.length} chars of HTML`);
   panel.webview.postMessage({
     type: 'appendContent',
     html: `<div class="stats-block">${html}</div>`

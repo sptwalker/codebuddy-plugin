@@ -87,22 +87,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 
 
-    // 注册 showStatsPanel 命令（打开/聚焦统计文档）
+    // 注册 showStatsPanel 命令（打开/聚焦统计面板 + 恢复历史记录）
     const showStatsCmd = vscode.commands.registerCommand(
       'codebuddy.enhance.showStatsPanel',
-      () => {
+      async () => {
         try {
-          // 尝试导入并显示统计文档
-          import('./core/chatInjector').then(({ getStatsDocument }) => {
-            const doc = getStatsDocument();
-            if (doc) {
-              vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside);
-            } else {
-              vscode.window.showInformationMessage('💡 还没有统计数据，请先进行一次 AI 对话');
-            }
-          }).catch(() => {
-            vscode.window.showInformationMessage('⚠ 统计文档功能暂时不可用');
-          });
+          const { getOrCreateStatsPanel } = await import('./core/statsWebviewPanel');
+          await getOrCreateStatsPanel(context);
         } catch (e) { logError('[Entry] showStatsPanel failed', e); }
       }
     );
@@ -113,8 +104,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       'codebuddy.enhance.closeStatsPanel',
       () => {
         try {
-          import('./core/chatInjector').then(({ closeStatsDocument }) => {
-            closeStatsDocument();
+          import('./core/statsWebviewPanel').then(({ closeStatsPanel }) => {
+            closeStatsPanel();
           });
         } catch { /* ignore */ }
       }

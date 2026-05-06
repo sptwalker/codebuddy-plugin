@@ -250,7 +250,7 @@ function unbindEventListeners(): void {
  *   4. 在行尾追加初始计时文案 "⏱ 0.0s"
  *   5. 启动 setInterval 定时刷新（带 ENGINE_REFRESH 标签）
  */
-function handleRequestStart(payload: RequestStartPayload): void {
+async function handleRequestStart(payload: RequestStartPayload): Promise<void> {
   // ★ 清理上一轮残留的状态栏状态
   clearDisplay();
 
@@ -294,7 +294,7 @@ function handleRequestStart(payload: RequestStartPayload): void {
   _ctx.lineId = locateCurrentOutputLine();
 
   // ★ 初始化 Webview 统计面板（仅此一处负责创建，后续 update 方法不再重复创建）
-  try { getOrCreateStatsPanel(); } catch { /* non-critical */ }
+  try { await getOrCreateStatsPanel(_extensionCtx ?? undefined); } catch { /* non-critical */ }
 
   // 重置节流缓存
   _lastDisplayedMs = -1;
@@ -703,7 +703,7 @@ async function handleSumCommand(): Promise<void> {
   }
 
   // ★ 确保面板已初始化（/sum 可能独立于 E1 触发，此时面板可能不存在）
-  try { getOrCreateStatsPanel(); } catch { /* non-critical */ }
+  try { await getOrCreateStatsPanel(_extensionCtx ?? undefined); } catch { /* non-critical */ }
 
   const todayStr = getTodayStr();
   logInfo(`[Engine] /sum triggered | date=${todayStr}`);

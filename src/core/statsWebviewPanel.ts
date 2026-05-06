@@ -27,8 +27,13 @@ let _currentHtml = '';
 /**
  * 初始化/获取统计面板（幂等）
  * 同一时间只存在一个实例；必须先调用此方法再调用其他 update 方法
+ *
+ * ★ 面板重建时自动从 globalState 恢复今日历史记录
  */
-export function getOrCreateStatsPanel(): vscode.WebviewPanel {
+export async function getOrCreateStatsPanel(
+  /** 可选：ExtensionContext 用于恢复历史记录（首次创建时传入） */
+  context?: vscode.ExtensionContext,
+): Promise<vscode.WebviewPanel> {
   if (_panel) {
     try { _panel.reveal(vscode.ViewColumn.Beside); } catch { /* disposed */ }
     return _panel;
@@ -44,13 +49,55 @@ export function getOrCreateStatsPanel(): vscode.WebviewPanel {
   _panel.webview.html = getBaseHtml();
   _currentHtml = '';
 
+  // ★ 面板重建时，从持久化存储恢复今日历史记录
+  if (context) {
+    await restoreHistoryFromStorage(context);
+  }
+
   _panel.onDidDispose(() => {
     _panel = null;
     logDebug('[StatsPanel] Disposed');
   });
 
-  logInfo('[StatsPanel] Created');
+  logInfo('[StatsPanel] Created (with history restore)');
   return _panel;
+}
+
+/**
+ * 从 globalState 读取今日所有轮次并逐条追加到面板历史区
+ */
+async function restoreHistoryFromStorage(context: vscode.ExtensionContext): Promise<void> {
+  try {
+    const { readTodayStats } = await import('../storage/storageManager');
+    const daily = await readTodayStats(context);
+    if (!daily.turns || daily.turns.length === 0) return;
+
+    const panel = getPanelRef();
+    if (!panel) return;
+
+    logInfo(`[StatsPanel] Restoring ${daily.turns.length} history entries from storage`);
+
+    for (const turn of daily.turns) {
+      const timeStr = turn.startTime
+        ? new Date(turn.startTime).toLocaleTimeString('zh-CN', { hour12: false })
+        : '--:--:--';
+      panel.webview.postMessage({
+        type: 'appendHistory',
+        html: `<div class="history-item">
+          <span class="hi-time">${escapeHtmlAttr(timeStr)}</span>
+          <span class="hi-duration">${turn.durationReadable}</span>
+          <span class="hi-tokens">${turn.tokenCount.totalTokens} tok</span>
+          <span class="hi-msg">${escapeHtmlAttr(turn.userMessagePreview || '(空)')}</span>
+          <span class="hi-status ${turn.finishStatus === 'normal' ? 'status-normal' :
+            turn.finishStatus === 'interrupted' ? 'status-interrupted' : 'status-error'}">${
+              turn.finishStatus === 'normal' ? '✅' : turn.finishStatus === 'interrupted' ? '⚠️' : '❌'
+            }</span>
+        </div>`
+      });
+    }
+  } catch (e) {
+    logError('[StatsPanel] History restore failed', e);
+  }
 }
 
 /**

@@ -47,6 +47,14 @@ import { parseUsageFromAPI, estimateTokensLocally } from './tokenCounter';
 import { locateCurrentOutputLine, appendDynamicText, replaceLineTailText, appendMarkdownTable, clearDisplay } from './chatInjector';
 import { generateTurnSummaryTable } from '../renderer/summaryTable';
 import { formatRealTimeDisplay } from '../renderer/realTimeDisplay';
+import {
+  getOrCreateStatsPanel,
+  updateTimerDisplay as webviewUpdateTimer,
+  setFinalResult as webviewSetFinalResult,
+  appendMarkdownContent as webviewAppendMarkdown,
+  clearContent as webviewClear,
+  isStatsPanelVisible,
+} from './statsWebviewPanel';
 import { appendTurnStats } from '../storage/storageManager';
 import { getTodayStr, getNowISO } from '../utils/dateUtil';
 import {
@@ -288,6 +296,9 @@ function handleRequestStart(payload: RequestStartPayload): void {
   _lastDisplayedMs = -1;
   _lastDisplayStr = '';
 
+  // ★ 同步重置 Webview 面板
+  try { webviewClear(); } catch { /* non-critical */ }
+
   // 首次渲染：在行尾追加 "⏱ 0.0s"
   if (_ctx.lineId) {
     appendDynamicText(_ctx.lineId, formatRealTimeDisplay(0));
@@ -338,6 +349,9 @@ function refreshTimerDisplay(): void {
   appendDynamicText(_ctx.lineId, displayText);
   _lastDisplayedMs = elapsedInt;
   _lastDisplayStr = displayText;
+
+  // ★ 同步更新 Webview 面板计时器（大字体动画显示）
+  try { webviewUpdateTimer(elapsedMs, false); } catch { /* non-critical */ }
 
   logTimerDebug(_ctx.turnId, elapsedMs);
 }
@@ -511,6 +525,9 @@ async function handleResponseEnd(payload: ResponseEndPayload): Promise<void> {
     replaceLineTailText(_ctx.lineId, finalDisplay.trim());
   }
 
+  // ★ 同步更新 Webview 面板最终结果
+  try { webviewSetFinalResult(finalDisplay.trim()); } catch { /* non-critical */ }
+
   // ── Step 5: 构造 TurnStats 并持久化 ──
   const turnStats = buildTurnStats(_ctx, finalDurationMs, durationReadable, tokenCount);
   await persistTurnStats(turnStats);
@@ -567,6 +584,7 @@ async function handleSessionChange(): Promise<void> {
   if (activeTurn.lineId && _state === EngineState.TIMING) {
     const interruptedDisplay = formatRealTimeDisplay(elapsedMs, false) + ' ⚠️ 已中断';
     replaceLineTailText(activeTurn.lineId, interruptedDisplay.trim());
+    try { webviewSetFinalResult(interruptedDisplay.trim()); } catch { /* non-critical */ }
   }
 
   // 先释放当前上下文，避免后续异步持久化与新一轮 REQUEST_START 串状态
@@ -630,6 +648,7 @@ async function handleRequestError(payload: RequestErrorPayload): Promise<void> {
   if (activeTurn.lineId && _state === EngineState.TIMING) {
     const errorDisplay = formatRealTimeDisplay(elapsedMs, false) + ' ❌ 请求失败';
     replaceLineTailText(activeTurn.lineId, errorDisplay.trim());
+    try { webviewSetFinalResult(errorDisplay.trim()); } catch { /* non-critical */ }
   }
 
   // 先释放当前上下文，避免后续异步持久化与新一轮事件串状态
@@ -887,6 +906,10 @@ function injectTurnSummaryTable(turn: TurnStats): void {
     }
 
     appendMarkdownTable(md + statusTag);
+
+    // ★ 同步注入 Webview 面板统计表格
+    try { webviewAppendMarkdown(md + statusTag); } catch { /* non-critical */ }
+
     logInfo(`[Engine] Feature2 Table injected | status=${turn.finishStatus}`);
   } catch (e) {
     logError('Failed to inject turn summary table', e);

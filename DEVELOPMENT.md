@@ -291,25 +291,49 @@ function appendToStatsDocument(markdown: string): void {
 
 
 
-## 三、待解决问题
+## 三、产品定位与能力边界（v0.1.0 最终确认）
 
-### 🔴 关键限制：官方 Hook 不提供回复正文
-当前官方 Hook 已能稳定提供 `UserPromptSubmit` / `Stop` 生命周期边界，但 `Stop` 事件没有 `transcript_path`，环境变量中也没有 transcript / chat / conversation 路径，因此无法从官方 Hook 直接获得 AI 回复正文。
+### ✅ 核心能力（已实现）
 
-**影响**：
-- completion tokens 暂为 0
-- TTFT 暂无法计算
-- 流式输出速度暂无法计算
+| 功能 | 状态 | 数据来源 |
+|------|------|----------|
+| 实时计时 (StatusBar) | ✅ 正常 | OfficialHookBridge E1/E3 |
+| 本轮统计表格 | ✅ 正常 | E1/E3 时间戳 + prompt 文本 |
+| /sum 日汇总 | ✅ 正常 | globalState 按日分桶聚合 |
+| Prompt Token 估算 | ✅ 正常 | tiktoken (gpt-4o 编码) |
+| 持久化存储 | ✅ 正常 | globalState，30天自动清理 |
+| 日期本地化 | ✅ 已修复 | YYYY-MM-DD 本地时区 |
 
-**下一步诊断计划**：
-1. 在真实 CodeBuddy 与 CodeBuddy Enhance 同窗口运行
-2. 继续观察 Webview / Document watcher 是否能捕获 Chat 回复正文或 chunk
-3. 若同窗口仍无法捕获，则需要寻找 CodeBuddy 插件公开 API、日志文件或可订阅事件作为新数据源
+### ⚸️ 暂不可用（需 CodeBuddy 官方支持）
 
-### 🟡 次要问题
+| 功能 | 状态 | 原因 |
+|------|------|------|
+| Completion Tokens | ❌ 0 | CodeBuddy Stop 事件不提供 `transcript_path` |
+| TTFT（首Token延迟）| ❌ — | 无流式 chunk 数据 |
+| 流式输出速度 | ❌ — | 同上 |
+| AI 回复正文捕获 | ❌ 无法获取 | CodeBuddy 不将对话写入可读磁盘文件 |
+
+### 根因确认（2026-05-06 深度调查）
+
+经对 `CodeBuddyExtension/Data/` 目录的完整扫描：
+
+```
+CodeBuddyExtension/Data/<uuid>/CodeBuddyIDE/<uuid>/
+├── check-point/   ← 嵌套 hash 目录，仅含空 meta.json (0 bytes)
+│   └── <hash1>/<hash2>/meta.json
+├── history/       ← 1 字节文件，进程锁定无法读取 (Access Denied)
+│   └── <hash> (1 byte)
+└── file-tree/     ← 仅包含我们自己的 codebuddy-enhance-events.jsonl
+```
+
+**结论**：`tencent-cloud.coding-copilot` 将 AI 对话数据以专有格式存储（加密或纯内存态），不输出标准 transcript JSONL 文件。Webview postMessage 拦截和 TextDocument 监听在同窗口测试中也未捕获到任何 Chat 相关消息——说明 CodeBuddy 使用自定义渲染机制，不走标准 VS Code Webview API。
+
+**未来路径**：等待 CodeBuddy 官方在 Hook 事件中增加 `transcript_path` 或 `response_text` 字段。当前 transcript 发现逻辑已保留为轻量级防御性代码（仅检查顶层路径），一旦官方支持会自动生效。
+
+### 🟡 次要问题（低优先级）
 - [ ] Feature 1 计时器目前仅在 StatusBar 显示，尚未实现在 Chat 窗口文本行尾追加
-- [ ] completion tokens / TTFT / 流式速度依赖回复正文或流式 chunk，待新数据源确认
 - [ ] 多语言支持（当前仅中文）
+- [ ] tiktoken 在 VSIX 安装场景下的模块加载路径需进一步验证
 
 ---
 
@@ -395,4 +419,4 @@ git push origin main
 
 ---
 
-*本日志由开发助手自动生成，记录了从初始构建到第六轮官方 Hook 桥接验证的完整迭代过程。*
+*本日志由开发助手自动生成，记录了从初始构建到 v0.1.0 正式定稿的完整迭代过程。*

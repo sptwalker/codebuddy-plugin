@@ -41,11 +41,30 @@ export function generateTurnSummaryTable(turn: TurnStats): string {
   const tc = turn.tokenCount;
   const isPartial = turn.finishStatus !== TurnFinishStatus.NORMAL;
 
-  // Token 展示：正常显示数值，异常时标记为估算/不完整
-  const formatToken = (val: number): string => {
-    if (val < 0) return '\u2014 (\u4e0d\u5b8c\u6574)';
-    if (isPartial && val === 0 && turn.responseLength > 0) return '\u2014 (\u4f30\u7b97)';
-    return val.toLocaleString() + (tc.isEstimated ? ' (est)' : '');
+  // Token 展示：
+  //   - completion=0 且 responseLength=0 → 标注 "需官方支持"（CodeBuddy 不提供 transcript）
+  //   - completion=0 但 responseLength>0 → 标注 "估算"
+  //   - completion<0 → 标注 "不完整"
+  //   - 正常值 → 加 "(est)" 后缀
+  const formatPromptToken = (): string => {
+    if (tc.promptTokens <= 0) return '\u2014';
+    return tc.promptTokens.toLocaleString() + (tc.isEstimated ? ' (est)' : '');
+  };
+
+  const formatCompletionToken = (): string => {
+    if (tc.completionTokens < 0) return '\u2014 (\u4e0d\u5b8c\u6574)';
+    if (tc.completionTokens === 0) {
+      if (turn.responseLength > 0) return '\u2014 (\u4f30\u7b97)';
+      return '\u2014'; // CodeBuddy 官方 Hook 不提供 AI 回复正文
+    }
+    return tc.completionTokens.toLocaleString();
+  };
+
+  const formatTotalToken = (): string => {
+    if (tc.totalTokens < 0) return '\u2014';
+    if (tc.completionTokens === 0 && tc.promptTokens > 0)
+      return tc.promptTokens.toLocaleString() + ' (prompt only)';
+    return tc.totalTokens.toLocaleString() + (tc.isEstimated ? ' (est)' : '');
   };
 
   // 输出速率
@@ -69,9 +88,9 @@ export function generateTurnSummaryTable(turn: TurnStats): string {
     [
       ['⏱ \u603b\u8017\u65f6', turn.durationReadable],
       ['⏳ \u9996Token\u5ef6\u8fdf(TTFT)', turn.ttftMs > 0 ? turn.ttftReadable : '\u2014'],
-      ['📊 Prompt Tokens', formatToken(tc.promptTokens)],
-      ['📊 Completion Tokens', formatToken(tc.completionTokens)],
-      ['📊 \u603b Token \u6d88\u8017', formatToken(tc.totalTokens)],
+      ['📊 Prompt Tokens', formatPromptToken()],
+      ['📊 Completion Tokens', formatCompletionToken()],
+      ['📊 \u603b Token \u6d88\u8017', formatTotalToken()],
       ['🚀 \u6d41\u5f0f\u8f93\u51fa\u901f\u7387', speedStr],
     ],
     ['right', 'left']
@@ -117,9 +136,10 @@ export function generateDailySummaryTable(
       ['📅 \u65e5\u671f', displayDate],
       ['💬 \u5bf9\u8bdd\u603b\u8f6e\u6b21', String(daily.totalTurns)],
       ['⏱ \u5408\u8ba1\u603b\u8017\u65f6', formatDuration(daily.totalDurationMs)],
-      ['🚀 \u5e73\u5747\u54cd\u5e94\u901f\u5ea6', `${daily.avgOutputSpeedCharsPerSec.toFixed(1)} chars/s`],
-      ['📥 \u603b\u8f93\u5165 Token (Prompt)', fmtNum(daily.totalPromptTokens)],
-      ['📤 \u603b\u8f93\u51fa Token (Completion)', fmtNum(daily.totalCompletionTokens)],
+      ['🚀 \u5e73\u5747\u54cd\u5e94\u901f\u5ea6', daily.avgOutputSpeedCharsPerSec > 0 ? `${daily.avgOutputSpeedCharsPerSec.toFixed(1)} chars/s` : '\u2014'],
+      ['📥 \u603b\u8f93\u5165 Token (Prompt)', fmtNum(daily.totalPromptTokens) + (daily.totalPromptTokens > 0 ? ' (est)' : '')],
+      // Completion Tokens: CodeBuddy 官方 Hook 不提供 AI 回复正文，此字段暂不可用
+      ['📤 \u603b\u8f93\u51fa Token (Completion)', daily.totalCompletionTokens > 0 ? fmtNum(daily.totalCompletionTokens) + ' (est)' : '\u2014 (\u9700\u5b98\u65b9\u652f\u6301)'],
       ['📊 \u5408\u8ba1\u603b\u6d88\u8017 Token', fmtNum(daily.totalTokens)],
       // ═══ 扩展辅助信息 ═══
       ['⏳ \u5e73\u5747\u9996Token\u5ef6\u8fdf(TTFT)', formatDuration(daily.avgTtftMs)],

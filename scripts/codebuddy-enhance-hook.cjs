@@ -5,9 +5,14 @@
  * CodeBuddy 官方 Hook 入口脚本。
  * 从 stdin 接收官方 Hook JSON payload，写入 JSONL 事件文件供扩展监听。
  *
- * 增强功能：
- * - Stop/SubagentStop 事件时，根据 session_id 主动搜索 transcript 文件
+ * 功能：
+ * - Stop/SubagentStop 事件时，轻量级搜索 transcript 文件（最佳尝试）
  * - 收集诊断环境变量便于调试
+ *
+ * 已知限制（2026-05-06 确认）：
+ *   CodeBuddy (tencent-cloud.coding-copilot) 不将 AI 回复正文写入磁盘。
+ *   其数据存储在专有格式中（加密或内存态），无标准 transcript 文件。
+ *   因此 completion tokens / TTFT / 流式速度 暂不可用，待官方支持。
  */
 const fs = require('fs');
 const path = require('path');
@@ -30,132 +35,36 @@ function pickDiagnosticEnv() {
   return result;
 }
 
-// ─── Transcript 文件发现 ────────────────────────────────────────
+// ─── Transcript 文件发现（轻量级最佳尝试） ─────────────────
+// 已知：CodeBuddy 不输出可读的 transcript。此函数仅作为防御性搜索，
+// 未来如果 CodeBuddy 版本升级支持了 transcript 输出，此处会自动生效。
 
 /**
- * 根据session_id在常见路径下搜索transcript文件。
- * CodeBuddy/Claude Code通常将transcript以.jsonl格式存储。
+ * 在常见路径下搜索 transcript 文件（仅检查顶层，不做深度递归）
  */
 function discoverTranscriptPath(sessionId, cwd) {
   if (!sessionId) return null;
 
   const homeDir = os.homedir();
-  const userData = process.env.APPDATA || process.env.LOCALAPPDATA || path.join(homeDir, 'AppData');
   const localData = process.env.LOCALAPPDATA || path.join(homeDir, 'AppData', 'Local');
 
-  // 构建候选搜索目录列表
-  const candidateDirs = [
-    // Claude Code 标准路径: ~/.claude/projects/<project-hash>/
-    path.join(homeDir, '.claude', 'projects'),
-    // CodeBuddy 可能的路径
-    path.join(homeDir, '.codebuddy'),
-    path.join(userData, 'CodeBuddy'),
-    path.join(localData, 'CodeBuddy'),
-    // 项目级路径
-    cwd && path.join(cwd, '.claude'),
-    cwd && path.join(cwd, '.codebuddy'),
-    // 全局数据目录
-    path.join(localData, 'claude'),
+  // 候选路径：Claude Code 标准位置 + 项目 .claude 目录
+  const candidatePaths = [
+    path.join(homeDir, '.claude', 'projects', `${sessionId}.jsonl`),
+    path.join(cwd || '', '.claude', `${sessionId}.jsonl`),
+    path.join(localData, 'CodeBuddyExtension', 'Data'),
   ].filter(Boolean);
 
-  // 可能的文件名模式
-  const fileNamePatterns = [
-    `${sessionId}.jsonl`,
-    `${sessionId}.json`,
-    sessionId,
-  ];
-
-  for (const dir of candidateDirs) {
+  for (const p of candidatePaths) {
     try {
-      if (!fs.existsSync(dir)) continue;
-
-      // 直接匹配：sessionId 作为文件名
-      for (const pattern of fileNamePatterns) {
-        const directPath = path.join(dir, pattern);
-        if (fs.existsSync(directPath)) {
-          const stat = fs.statSync(directPath);
-          if (stat.isFile() && stat.size > 0) {
-            return directPath;
-          }
-        }
+      // 仅检查直接文件匹配，不递归搜索（性能考虑）
+      if (fs.existsSync(p)) {
+        const stat = fs.statSync(p);
+        if (stat.isFile() && stat.size > 100) return p;
       }
-
-      // 子目录递归搜索（限制深度为2层）
-      const maxDepth = 2;
-      const searchQueue = [{ dir, depth: 0 }];
-      while (searchQueue.length > 0) {
-        const { dir: currentDir, depth } = searchQueue.shift();
-
-        if (depth >= maxDepth) continue;
-        try {
-          const entries = fs.readdirSync(currentDir, { withFileTypes: true });
-          for (const entry of entries) {
-            if (entry.name.startsWith('.') && entry.name !== '.claude') continue;
-            const fullPath = path.join(currentDir, entry.name);
-
-            if (entry.isFile()) {
-              // 检查文件名是否包含 session_id
-              if (entry.name.includes(sessionId) && (entry.name.endsWith('.jsonl') || entry.name.endsWith('.json'))) {
-                const stat = fs.statSync(fullPath);
-                if (stat.size > 0) return fullPath;
-              }
-              // 也检查是否是常见的 transcript 文件名
-              if ((entry.name === 'transcript.jsonl' || entry.name === 'conversation.jsonl' || entry.name === 'chat.jsonl')) {
-                const stat = fs.statSync(fullPath);
-                if (stat.size > 0) return fullPath;
-              }
-            } else if (entry.isDirectory()) {
-              searchQueue.push({ dir: fullPath, depth: depth + 1 });
-            }
-          }
-        } catch { /* skip permission errors */ }
-      }
+      // 如果是目录（如 CodeBuddyExtension/Data），跳过——已知其中无可读 transcript
     } catch { /* skip */ }
   }
-
-  return null;
-}
-
-/**
- * 扫描项目目录下的 .claude/ 子目录寻找最新修改的 transcript
- */
-function findLatestTranscriptInProject(cwd) {
-  if (!cwd) return null;
-
-  const claudeDir = path.join(cwd, '.claude');
-  try {
-    if (!fs.existsSync(claudeDir)) return null;
-
-    let latestPath = null;
-    let latestTime = 0;
-
-    function scanDir(dir, depth) {
-      if (depth > 3) return;
-      try {
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          const fullPath = path.join(dir, entry.name);
-          if (entry.isDirectory()) {
-            scanDir(fullPath, depth + 1);
-          } else if (
-            entry.name.endsWith('.jsonl') &&
-            (entry.name.includes('transcript') || entry.name.includes('session'))
-          ) {
-            try {
-              const stat = fs.statSync(fullPath);
-              if (stat.mtimeMs > latestTime && stat.size > 1024) {
-                latestTime = stat.mtimeMs;
-                latestPath = fullPath;
-              }
-            } catch { /* skip */ }
-          }
-        }
-      } catch { /* skip */ }
-    }
-
-    scanDir(claudeDir, 0);
-    return latestPath;
-  } catch { /* skip */ }
 
   return null;
 }
@@ -182,14 +91,9 @@ function main() {
           discoveredTranscript = input.transcript_path;
         }
 
-        // 策略 2: 根据 session_id 搜索
+        // 策略 2: 轻量级搜索（仅顶层匹配，不递归）
         if (!discoveredTranscript && input.session_id) {
           discoveredTranscript = discoverTranscriptPath(input.session_id, projectDir);
-        }
-
-        // 策略 3: 在项目 .claude/ 目录查找最近修改的 transcript
-        if (!discoveredTranscript) {
-          discoveredTranscript = findLatestTranscriptInProject(projectDir);
         }
 
         if (discoveredTranscript) {

@@ -1,7 +1,7 @@
 # CodeBuddy Enhance 开发日志
 
 > 项目：VS Code 扩展 — CodeBuddy 对话实时计时与统计
-> 版本：v0.1.0 (dev)
+> 版本：v0.2.0
 > 最后更新：2026-05-06
 
 ---
@@ -289,9 +289,69 @@ function appendToStatsDocument(markdown: string): void {
 2. 或在 Extension Development Host 测试窗口中同时运行 CodeBuddy
 3. 在同窗口环境继续验证 Webview / Document fallback 是否能捕获回复正文或流式输出
 
+---
 
+### 📅 第七轮：v0.2.0 — WebviewPanel 统一 + 历史恢复 + /sum 修复
 
-## 三、产品定位与能力边界（v0.1.0 最终确认）
+**日期**：2026-05-06
+
+**用户反馈与问题修复**：
+
+1. ❌ 弹出多个 CodeBuddy Enhance 面板
+2. ❌ 统计表格字符宽度导致排列格式不整齐
+3. ❌ `/sum` 命令在 Chat 窗口输入后未触发日汇总表格
+4. ❌ 关闭统计面板后重新打开，历史数据全部清除
+5. 📝 要求移除无法统计的 TTFT/Completion/流式速度字段
+6. 📝 每次打包更新版本号
+
+##### R1: 精简统计表格 — `src/renderer/summaryTable.ts`
+- 移除不可用字段：TTFT、Completion Tokens、流式输出速率
+- 本轮仅 4 行：⏱总耗时、📊Prompt Tokens、📊总Token、💬用户消息预览
+- 日汇总同步精简，明细表新增状态列
+
+##### R2: 统一 WebviewPanel 输出 — `src/core/engine.ts`
+- 移除所有 `appendMarkdownTable()` 调用（旧 Markdown Doc 方式）
+- 所有输出统一走 `webviewAppendMarkdown()`
+
+##### R3: 面板重复弹出修复 — `src/core/statsWebviewPanel.ts`
+- 更新方法改用 `getPanelRef()`，不自动创建面板
+- E1 入口统一调用一次 `getOrCreateStatsPanel()` 创建
+
+##### R4: 表格对齐 — CSS 修复
+- `table-layout: fixed` + 等宽字体 + 固定列宽(60%/40%)
+
+##### R5: `/sum` 三阶段修复 — `src/hook/officialHookBridge.ts`
+- 阶段1: `/sum` 路径未触发面板创建 → 添加 `getOrCreateStatsPanel()`
+- 阶段2: 幽灵 Stop 在 21秒后覆盖 /sum 输出
+- 阶段3: 新增 `_suppressNextStop` 标志抑制幽灵 Stop
+
+##### R6: 历史恢复 — 多文件联动
+- `getOrCreateStatsPanel(context)` async 化，面板重建时从 globalState 恢复今日历史
+- showStatsPanel/closeStatsPanel 命令改为操作 WebviewPanel
+
+##### R7: 其他改进
+| 文件 | 变更 |
+|------|------|
+| chatInjector.ts | StatusBar setTimeout 纳入 cleanupManager |
+| storageManager.ts | 写队列串行化防并发丢失 |
+| .vscodeignore | 新建，保留 tiktoken |
+| package.json | bundledDependencies+tiktoken；0.1.0→0.2.0 |
+
+**验证结果**：
+
+| 功能 | 状态 |
+|------|------|
+| ⏱ 计时器 (StatusBar+Webview) | ✅ |
+| 📋 本轮统计 (4字段) | ✅ |
+| /sum 日汇总 | ✅ |
+| 📜 历史记录滚动区 | ✅ |
+| 关闭重开历史恢复 | ✅ |
+| 单面板无重复 | ✅ |
+| 表格对齐 | ✅ |
+
+---
+
+## 三、产品定位与能力边界（v0.2.0）
 
 ### ✅ 核心能力（已实现）
 
@@ -401,22 +461,20 @@ tsc -p ./
 
 ### Git 提交建议
 ```bash
-git add .
-git commit -m "feat: v0.1.0-dev — 事件捕获系统重构与诊断增强
+git add DEVELOPMENT.md
+git commit -m "docs: update development log for v0.2.0
 
-主要变更：
-- 废弃 WebviewPanel，改用 Untitled Markdown Document 展示统计
-- 禁用 Command Interceptor（阻塞 Chat 发送）
-- Document Watcher 切换诊断模式（宽松匹配 + 全面日志）
-- Webview 拦截升级为周期性扫描（3s间隔）
-- 新增注入锁机制防止事件循环
-- 调整 CHUNK_TIMEOUT 至 10s + MIN_AUTO_END_RESPONSE_LEN 守卫
-- E1 入口新增 ★★★ 显著日志标记
-
-待解决：VS Code Chat 实际文档类型/URI scheme 待诊断确认"
+v0.2.0 key changes:
+- WebviewPanel as unified output target
+- /sum command fix (ghost stop suppression)
+- History restore on panel reopen
+- Simplified stats tables (4-field)
+- Table alignment with monospace font"
 git push origin main
 ```
 
 ---
 
-*本日志由开发助手自动生成，记录了从初始构建到 v0.1.0 正式定稿的完整迭代过程。*
+*本日志记录了从初始构建到 v0.2.0 的完整迭代过程。*
+
+> **v0.2.0 更新要点（第七轮）**：WebviewPanel 统一输出、历史恢复、`/sum` 修复、表格精简对齐、幽灵 Stop 抑制

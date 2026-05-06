@@ -1,0 +1,27 @@
+# ─── 排除：开发源码 ─────────────────────
+src/
+*.ts
+!out/**/*.js
+!out/**/*.d.ts
+!out/**/*.map
+
+# ─── 排除：配置文件（保留 package.json）─────
+tsconfig.json
+.eslintrc*
+.gitignore
+DEVELOPMENT.md
+
+# ─── 排除：开发依赖目录（保留 tiktoken）──
+node_modules/*
+!node_modules/tiktoken/**
+!node_modules/tiktoken/**
+
+# ─── 排除：测试/临时文件 ────────────────
+.vscode-test/
+*.vsix
+
+# ─── 排除：事件日志（运行时生成）──────────
+.codebuddy/codebuddy-enhance-events.jsonl
+
+# ─── 保留：所有其他文件 ──────────────────
+# (out/, package.json, scripts/, .codebuddy/settings.json 等)

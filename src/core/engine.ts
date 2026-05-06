@@ -702,6 +702,9 @@ async function handleSumCommand(): Promise<void> {
     return;
   }
 
+  // ★ 确保面板已初始化（/sum 可能独立于 E1 触发，此时面板可能不存在）
+  try { getOrCreateStatsPanel(); } catch { /* non-critical */ }
+
   const todayStr = getTodayStr();
   logInfo(`[Engine] /sum triggered | date=${todayStr}`);
 

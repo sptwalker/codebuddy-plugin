@@ -64,6 +64,11 @@ let _installed = false;
 let _activeTurn: ActiveOfficialTurn | null = null;
 const _fileOffsets = new Map<string, number>();
 const _processedStops = new Set<string>();
+/**
+ * 当 /sum 等 internal command 被 consumed 后，CodeBuddy 仍可能发出一个幽灵 Stop。
+ * 此标志用于抑制该 Stop 触发完整的 E1→E3 统计流程。
+ */
+let _suppressNextStop = false;
 
 function generateRequestId(input: OfficialHookInput): string {
   const session = input.session_id || 'official-hook';
@@ -184,7 +189,8 @@ async function handleUserPromptSubmit(input: OfficialHookInput): Promise<void> {
   const prompt = input.prompt || '';
   const sumResult = await parseAndExecuteCommand(prompt);
   if (sumResult.consumed) {
-    logInfo('[OfficialHookBridge] /sum command consumed, suppressing request start');
+    logInfo('[OfficialHookBridge] /sum command consumed, suppressing request start + next Stop');
+    _suppressNextStop = true;
     return;
   }
 
@@ -229,6 +235,13 @@ function rememberProcessedStop(stopKey: string): void {
 }
 
 async function handleStop(input: OfficialHookInput): Promise<void> {
+  // ★ 抑制 /sum 等内部命令消费后的幽灵 Stop
+  if (_suppressNextStop) {
+    _suppressNextStop = false;
+    logInfo('[OfficialHookBridge] Stop suppressed (post-command ghost stop)');
+    return;
+  }
+
   const sessionId = input.session_id || _activeTurn?.sessionId || 'unknown-session';
   const stopKey = buildStopKey(input, sessionId);
   if (_processedStops.has(stopKey)) {

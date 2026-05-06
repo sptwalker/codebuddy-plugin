@@ -17,6 +17,27 @@ import { getTodayStr } from '../utils/dateUtil';
 import { logInfo, logWarn, logError, logDebug } from '../utils/errorGuard';
 import { appendTurnToBucket, rebuildAggregates } from './dailyBucket';
 
+// ─── 并发写保护 ────────────────────────────────────────
+
+/**
+ * 写锁：防止并发 appendTurnStats 导致的 write-write 数据丢失
+ *
+ * VS Code globalState.update 是异步操作，如果在一次 write 完成前又触发了新的 read→modify→write，
+ * 后者的 read 会读到旧数据（前者尚未写入），导致前者的数据被覆盖。
+ *
+ * 解决方案：简单的 Promise 队列，确保写操作串行执行。
+ */
+let _writeQueue: Promise<unknown> = Promise.resolve();
+
+function enqueueWrite<T>(writeFn: () => Promise<T>): Promise<T> {
+  const wrapped: () => Promise<unknown> = writeFn;
+  _writeQueue = _writeQueue.then(wrapped).then(
+    (result) => result,
+    (error) => { throw error; }  // re-throw 保持 reject 状态
+  );
+  return _writeQueue as Promise<T>;
+}
+
 // ─── 内部辅助 ───────────────────────────────────────
 
 /** 创建空的日期桶 */
@@ -109,41 +130,44 @@ export async function appendTurnStats(
   context: vscode.ExtensionContext,
   turn: TurnStats
 ): Promise<void> {
-  const root = await readRoot(context);
-  const dateKey = turn.startTime.slice(0, 10);
-  const todayKey = getTodayStr();
+  // ★ 通过写队列串行化，防止并发写入导致数据丢失
+  return enqueueWrite(async () => {
+    const root = await readRoot(context);
+    const dateKey = turn.startTime.slice(0, 10);
+    const todayKey = getTodayStr();
 
-  // ── 跨日检测与日志 ──
-  if (dateKey !== todayKey) {
-    logWarn(
-      `[Storage] Cross-day write detected | turnDate=${dateKey} | today=${todayKey}` +
-      ` | turnId=${turn.turnId}`
+    // ── 跨日检测与日志 ──
+    if (dateKey !== todayKey) {
+      logWarn(
+        `[Storage] Cross-day write detected | turnDate=${dateKey} | today=${todayKey}` +
+        ` | turnId=${turn.turnId}`
+      );
+    }
+
+    let bucket = root.dailyBuckets[dateKey];
+    if (!bucket) {
+      bucket = createEmptyDailyBucket(dateKey);
+      root.dailyBuckets[dateKey] = bucket;
+      logInfo(`[Storage] New bucket created | date=${dateKey}`);
+    }
+
+    // 追加数据并更新聚合字段
+    appendTurnToBucket(bucket, turn);
+
+    // 持久化
+    await writeRoot(context, root, `appendTurn:${turn.turnId}`);
+
+    // ── 自动清理过期数据 ──
+    // 每次写入后检查是否需要清理（低频调用，不影响性能）
+    await runAutoCleanupIfNeeded(context);
+
+    logInfo(
+      `[Storage] Turn persisted | turn=${turn.turnId} | date=${dateKey}` +
+      ` | duration=${turn.durationMs}ms | tokens=${turn.tokenCount.totalTokens}` +
+      ` | status=${turn.finishStatus}` +
+      ` | dailyTotal=${bucket.totalTurns} turns`
     );
-  }
-
-  let bucket = root.dailyBuckets[dateKey];
-  if (!bucket) {
-    bucket = createEmptyDailyBucket(dateKey);
-    root.dailyBuckets[dateKey] = bucket;
-    logInfo(`[Storage] New bucket created | date=${dateKey}`);
-  }
-
-  // 追加数据并更新聚合字段
-  appendTurnToBucket(bucket, turn);
-
-  // 持久化
-  await writeRoot(context, root, `appendTurn:${turn.turnId}`);
-
-  // ── 自动清理过期数据 ──
-  // 每次写入后检查是否需要清理（低频调用，不影响性能）
-  await runAutoCleanupIfNeeded(context);
-
-  logInfo(
-    `[Storage] Turn persisted | turn=${turn.turnId} | date=${dateKey}` +
-    ` | duration=${turn.durationMs}ms | tokens=${turn.tokenCount.totalTokens}` +
-    ` | status=${turn.finishStatus}` +
-    ` | dailyTotal=${bucket.totalTurns} turns`
-  );
+  });
 }
 
 /**

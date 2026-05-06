@@ -45,7 +45,10 @@ interface OfficialHookInput {
   __enhance_hook_diag?: {
     argv?: string[];
     env?: Record<string, string>;
+    _discovery_result?: string;
   };
+  /** Hook 脚本主动发现的 transcript 路径（Stop/SubagentStop 时填充） */
+  _discovered_transcript_path?: string;
 }
 
 interface ActiveOfficialTurn {
@@ -248,11 +251,21 @@ async function handleStop(input: OfficialHookInput): Promise<void> {
     });
   }
 
-  const fullResponseText = await extractLatestAssistantText(input.transcript_path);
-  if (!input.transcript_path) {
-    logWarn('[OfficialHookBridge] Stop event has no transcript_path; completion tokens/response length cannot be resolved from official hook');
+  // ─── Transcript 路径解析优先级 ─────────────────────────────
+  // 1. Hook 脚本主动发现的路径（最高优先级）
+  // 2. 官方 Hook 原始提供的 transcript_path
+  const transcriptPath =
+    input._discovered_transcript_path ||
+    input.transcript_path;
+
+  const fullResponseText = await extractLatestAssistantText(transcriptPath);
+
+  if (!transcriptPath) {
+    logWarn('[OfficialHookBridge] Stop event has no transcript_path (neither original nor discovered); completion tokens/response length cannot be resolved');
   } else if (!fullResponseText) {
-    logWarn(`[OfficialHookBridge] transcript parsed but no assistant text found | path=${input.transcript_path}`);
+    logWarn(`[OfficialHookBridge] transcript found but no assistant text extracted | path=${transcriptPath}`);
+  } else {
+    logInfo(`[OfficialHookBridge] ✅ assistant text extracted from transcript | path=${transcriptPath} | length=${fullResponseText.length}`);
   }
   const payload: ResponseEndPayload = {
     fullResponseText: fullResponseText || undefined,

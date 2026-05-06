@@ -18,6 +18,7 @@
 import * as vscode from 'vscode';
 import { logInfo, logError, logWarn, logDebug, getOutputChannelInstance } from '../utils/errorGuard';
 import { beginStatsDocInjection, endStatsDocInjection } from '../hook/chatLifecycleHook';
+import { cleanupManager, TimerTag } from '../utils/cleanup';
 
 // ─── 类型定义 ───────────────────────────────────────
 
@@ -116,12 +117,12 @@ export function replaceLineTailText(lineId: string, finalText: string): InjectRe
     // 对话结束：显示完成标记 + 最终数据
     _statusBarItem.text = `$(check) ${finalText}`;
 
-    // 5 秒后自动隐藏（避免一直占用状态栏）
-    setTimeout(() => {
+    // 5 秒后自动隐藏（避免一直占用状态栏）— 使用 cleanupManager 纳入清理管理
+    cleanupManager.setTimeout(() => {
       if (_statusBarItem && !_statusBarItem.text.includes('$(clock)')) {
         _statusBarItem.hide();
       }
-    }, 5000);
+    }, 5000, TimerTag.CLEANUP);
 
     return { success: true };
   } catch (e) {

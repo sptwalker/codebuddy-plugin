@@ -170,19 +170,62 @@ function scanAndHookWebviews(): void {
 
 /**
  * 对单个 Webview 实例进行消息拦截
+ *
+ * 改进：同时使用两种监听策略确保覆盖：
+ * 1. onDidReceiveMessage — 监听 Webview JS → ExtensionHost 的标准通道
+ * 2. postMessage monkey-patch — 监听 ExtensionHost → Webview 的反向通道（部分框架可能用此传递状态）
  */
 function hookWebviewInstance(webview: vscode.Webview): void {
   if (hookedWebviews.has(webview)) return;
   hookedWebviews.add(webview);
 
-  // 监听来自 Webview 的消息（ExtensionHost → Webview 反向通道）
-  // CodeBuddy 通常通过这个通道报告请求状态变化
+  // 策略 1: 标准通道 — 监听 Webview JS 发往 ExtensionHost 的消息
   const disposable = webview.onDidReceiveMessage((msg) => {
     handleMessageFromWebview(msg);
   });
 
-  // 将 disposable 注册以便清理
+  // 策略 2: 反向通道 — monkey-patch postMessage 以捕获 ExtensionHost→Webview 方向的消息
+  //    部分 AI 框架可能通过这个方向传递内部状态信息
+  try {
+    const originalPost = webview.postMessage.bind(webview);
+    (webview as unknown as Record<string, unknown>).postMessage = async (message: unknown): Promise<boolean> => {
+      // 异步处理，不阻塞原始调用
+      setImmediate(() => {
+        handlePostMessageOutbound(message);
+      });
+      return originalPost(message);
+    };
+    logInfo('[ChatLifecycleHook] Webview postMessage patched for outbound monitoring');
+  } catch { /* patch 失败不影响主流程 */ }
+
   logInfo(`[ChatLifecycleHook] Webview interceptor installed (${hookedWebviews.size} total)`);
+}
+
+/**
+ * 处理通过 postMessage 发出的出站消息（ExtensionHost → Webview 方向）
+ *
+ * 某些框架可能在发送给前端的控制消息中包含流式状态，
+ * 我们在这里进行诊断性记录。
+ */
+function handlePostMessageOutbound(msg: unknown): void {
+  if (!msg || typeof msg !== 'object') return;
+  const m = msg as Record<string, unknown>;
+  const type = String(m.type ?? m.command ?? m.event ?? '(no-type)');
+  const keys = Object.keys(m).join(',');
+
+  // 记录所有出站消息用于协议分析
+  logInfo(`[ChatHook] OUTBOUND msg | type="${type}" | keys=[${keys}]`);
+
+  // 尝试识别请求开始类消息
+  const lowerType = type.toLowerCase();
+  if (
+    lowerType.includes('request') ||
+    lowerType.includes('submit') ||
+    lowerType.includes('prompt') ||
+    lowerType.includes('send')
+  ) {
+    logInfo(`[ChatHook] 📤 Possible request-start detected in outbound: type="${type}"`);
+  }
 }
 
 /**

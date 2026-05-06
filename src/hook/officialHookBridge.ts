@@ -69,6 +69,8 @@ const _processedStops = new Set<string>();
  * 此标志用于抑制该 Stop 触发完整的 E1→E3 统计流程。
  */
 let _suppressNextStop = false;
+/** 抑制计数器：consumed 命令后需要连续抑制的 Stop/SubagentStop 次数 */
+let _suppressStopCount = 0;
 
 function generateRequestId(input: OfficialHookInput): string {
   const session = input.session_id || 'official-hook';
@@ -189,8 +191,9 @@ async function handleUserPromptSubmit(input: OfficialHookInput): Promise<void> {
   const prompt = input.prompt || '';
   const sumResult = await parseAndExecuteCommand(prompt);
   if (sumResult.consumed) {
-    logInfo('[OfficialHookBridge] /sum command consumed, suppressing request start + next Stop');
+    logInfo('[OfficialHookBridge] /sum command consumed, suppressing request start + next Stops');
     _suppressNextStop = true;
+    _suppressStopCount = 2; // 抑制接下来 2 个 Stop/SubagentStop
     return;
   }
 
@@ -235,10 +238,11 @@ function rememberProcessedStop(stopKey: string): void {
 }
 
 async function handleStop(input: OfficialHookInput): Promise<void> {
-  // ★ 抑制 /sum 等内部命令消费后的幽灵 Stop
-  if (_suppressNextStop) {
-    _suppressNextStop = false;
-    logInfo('[OfficialHookBridge] Stop suppressed (post-command ghost stop)');
+  // ★ 抑制 /sum 等内部命令消费后的幽灵 Stop（可能有多个：Stop + SubagentStop）
+  if (_suppressStopCount > 0) {
+    _suppressStopCount--;
+    const eventName = input.hook_event_name || 'Stop';
+    logInfo(`[OfficialHookBridge] ${eventName} suppressed (post-command, remaining=${_suppressStopCount})`);
     return;
   }
 

@@ -41,8 +41,8 @@ export async function getOrCreateStatsPanel(
 
   _panel = vscode.window.createWebviewPanel(
     'codebuddyEnhanceStats',
-    '📊 CodeBuddy 统计',
-    vscode.ViewColumn.Beside,
+    '📊 CodeBuddy Enhance',
+    vscode.ViewColumn.Active,          // 使用 Active 避免被 Beside 编辑器组挤掉
     { enableScripts: true, retainContextWhenHidden: true }
   );
 
